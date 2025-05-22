@@ -1,41 +1,60 @@
-from typing import Callable
+from typing import Callable, cast as typing_cast
 
 import torch
 import torch.nn as nn
 
+from src.parameters import Hyperparameters
 from src.types_ import State
 
 class ActorNetwork(nn.Module):
-    def __init__(self, n_actions: int, alpha: float, input_dims: tuple[int, int], fc1_dims: int = 256, fc2_dims: int = 256):
+    def __init__(
+        self, 
+        n_actions: int, 
+        input_dim: int, 
+        parameters: Hyperparameters
+    ):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(*input_dims, fc1_dims),
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, parameters.actor_fc1_dim),
             nn.ReLU(),
-            nn.Linear(fc1_dims, fc2_dims),
+            nn.Linear(parameters.actor_fc1_dim, parameters.actor_fc2_dim),
             nn.ReLU(),
-            nn.Linear(fc2_dims, n_actions),
+            nn.Linear(parameters.actor_fc2_dim, n_actions),
             nn.Softmax(dim=-1)
         )
-        self.optimizer = torch.optim.Adam(params=self.parameters(), lr=alpha)
+        self.optimizer = torch.optim.Adam(
+            params=self.parameters(), 
+            lr=parameters.alpha
+        )
 
     def forward(self, state: State) -> torch.distributions.Distribution:
-        return self.layers(state)
+        probs: torch.Tensor = self.net(state)
+        # @ Logits or probs? What even is the difference?
+        return torch.distributions.Categorical(probs=probs)
     
     __call__: Callable[[State], torch.distributions.Distribution]
 
 class CriticNetwork(nn.Module):
-    def __init__(self, alpha: float, input_dims: tuple[int, int], fc1_dims: int = 256, fc2_dims: int = 256):
+    def __init__(
+        self, 
+        input_dim: int, 
+        parameters: Hyperparameters
+    ):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(*input_dims, fc1_dims),
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, parameters.critic_fc1_dim),
             nn.ReLU(),
-            nn.Linear(fc1_dims, fc2_dims),
+            nn.Linear(parameters.critic_fc1_dim, parameters.critic_fc2_dim),
             nn.ReLU(),
-            nn.Linear(fc2_dims, 1)
+            nn.Linear(parameters.critic_fc2_dim, 1)
         )
-        self.optimizer = torch.optim.Adam(params=self.parameters(), lr=alpha)
+        self.optimizer = torch.optim.Adam(
+            params=self.parameters(), 
+            lr=parameters.alpha
+        )
 
     def forward(self, state: State) -> torch.Tensor:
-        return self.layers(state)
+        return typing_cast(torch.Tensor, self.net(state)) \
+            .squeeze().to(torch.float64)
     
     __call__: Callable[[State], torch.Tensor]

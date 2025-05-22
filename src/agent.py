@@ -1,42 +1,40 @@
-import numpy as np
+from typing import final
 
 import torch
 
-from src.types_ import Done, Reward, Value
 from src.batching import RolloutExperiences
 from src.networks import ActorNetwork, CriticNetwork
+from src.misc import flatten_dim
+from src.parameters import Hyperparameters
+from src.types_ import Action, Done, Observation, Probability, Reward, Value
 
+@final
 class Agent:
     def __init__(
         self,
         n_actions: int,
-        input_dims: tuple[int, int],
-        gamma: float = 0.99,
-        alpha: float = 0.0003,
-        gae_lambda: float = 0.95,
-        policy_clip: float = 0.2,
-        minibatch_size: int = 64,
-        n_epochs: int = 10
+        input_dim: int | tuple[int],
+        parameters: Hyperparameters,
     ):
-        self.experiences = RolloutExperiences(minibatch_size)
-        self.gamma = gamma
-        self.epsilon = policy_clip
-        self.n_epochs = n_epochs
-        # Lower lambda is lower bias estimate
-        self.gae_lambda = gae_lambda
+        self.experiences = RolloutExperiences(parameters.minibatch_size)
+        self.gamma = parameters.gamma
+        self.epsilon = parameters.epsilon
+        self.n_epochs = parameters.n_epochs
+        self.gae_lambda = parameters.gae_lambda
+        self.c1 = parameters.critic_coefficient
 
         # @ Why use separate optimizers for the actor and the critic?
-        self.actor = ActorNetwork(n_actions, alpha, input_dims)
-        self.critic = CriticNetwork(alpha, input_dims)
+        input_dim = flatten_dim(input_dim)
+        self.actor = ActorNetwork(n_actions, input_dim, parameters)
+        self.critic = CriticNetwork(input_dim, parameters)
 
-    def choose_action(self, observation):
-        state = torch.tensor([observation], dtype=torch.float)
+    def choose_action(self, observation: Observation) -> tuple[Action, Probability, Value]:
+        state = torch.from_numpy(observation)
         dist = self.actor(state)
         value = self.critic(state)
         action = dist.sample()
         prob = dist.log_prob(action)
-        # @ Do we need .squeeze()?
-        return action.squeeze().item(), prob.squeeze().item(), value.squeeze().item()
+        return action.item(), prob.item(), value.item()
     
     def learn(self):
         for _ in range(self.n_epochs):       
@@ -55,7 +53,7 @@ class Agent:
                 )
 
                 dist = self.actor(states)
-                critic_value = self.critic(states).squeeze()
+                critic_value = self.critic(states)
                 advantages = current_advantages[minibatch_indicies]
 
                 new_probs = dist.log_prob(actions)
@@ -65,11 +63,10 @@ class Agent:
                 returns = advantages + values
 
                 actor_loss = -torch.min(weighted_ratio, clipped_ratio).mean()
-                # @ Is this the same as MSE loss
-                critic_loss = torch.pow(returns - critic_value, 2).mean()
+                critic_loss = torch.nn.functional.mse_loss(returns, critic_value)
 
                 # @ Should we include entropy?
-                total_loss = actor_loss + 0.5 * critic_loss
+                total_loss = actor_loss + self.c1 * critic_loss
                 self.actor.optimizer.zero_grad()
                 self.critic.optimizer.zero_grad()
                 total_loss.backward()
