@@ -1,8 +1,10 @@
+from functools import partial
 from typing import final
 
+import log
 import torch
 
-from src.batching import RolloutExperiences
+from src.batching import AgentExperiences
 from src.networks import ActorNetwork, CriticNetwork
 from src.misc import flatten_dim
 from src.parameters import Hyperparameters
@@ -16,7 +18,7 @@ class Agent:
         input_dim: int | tuple[int],
         parameters: Hyperparameters,
     ):
-        self.experiences = RolloutExperiences(parameters.minibatch_size)
+        self.experiences = AgentExperiences(parameters.minibatch_size)
         self.gamma = parameters.gamma
         self.epsilon = parameters.epsilon
         self.n_epochs = parameters.n_epochs
@@ -37,24 +39,23 @@ class Agent:
         return action.item(), prob.item(), value.item()
     
     def learn(self):
+        computed_advantages = self.compute_advantages(
+            self.experiences.values, 
+            self.experiences.rewards, 
+            self.experiences.dones
+        )
+        # @ When should advantages be computed? Why?
         for _ in range(self.n_epochs):       
-            # @ When should advantages be computed? Why?
-            current_advantages = self.compute_advantages(
-                self.experiences.values, 
-                self.experiences.rewards, 
-                self.experiences.dones
-            )
-                
             for minibatch_indicies in self.experiences.minibatch_indicies():
                 minibatch = self.experiences[minibatch_indicies]
-                states, actions, values, old_probs, *_ = minibatch
-                states, actions, values, old_probs = map(
-                    torch.tensor, (states, actions, values, old_probs)
+                states, actions, values, old_probs, *_ = map(
+                    partial(torch.tensor, dtype=torch.float32), 
+                    minibatch
                 )
 
                 dist = self.actor(states)
                 critic_value = self.critic(states)
-                advantages = current_advantages[minibatch_indicies]
+                advantages = computed_advantages[minibatch_indicies]
 
                 new_probs = dist.log_prob(actions)
                 probs_ratio = new_probs.exp() / old_probs.exp()

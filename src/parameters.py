@@ -18,7 +18,3 @@ class Hyperparameters:
     def __post_init__(self):
         assert self.actor_fc2_dim <= self.actor_fc1_dim
         assert self.critic_fc2_dim <= self.critic_fc1_dim
-
-@dataclass(slots=True, frozen=True)
-class AlgorithmOptions:
-    pass

@@ -54,7 +54,6 @@ class CriticNetwork(nn.Module):
         )
 
     def forward(self, state: State) -> torch.Tensor:
-        return typing_cast(torch.Tensor, self.net(state)) \
-            .squeeze().to(torch.float64)
+        return typing_cast(torch.Tensor, self.net(state)).squeeze(-1)
     
     __call__: Callable[[State], torch.Tensor]
