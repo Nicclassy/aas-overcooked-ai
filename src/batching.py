@@ -1,22 +1,33 @@
-import numpy as np
 from dataclasses import dataclass
+from typing import Any, Iterator, final
+
+import numpy as np
 from numpy.typing import NDArray
-from typing import Generator, Iterator
 
 from src.types_ import (
     Action, 
     Done, 
     Probability, 
     Reward, 
-    State, 
-    Value
+    State,
+    StateValue,
+    StoredState, 
+    Value,
+    StoredAction,
+    StoredValue,
+    StoredProbability,
+    StoredReward,
+    StoredDone
 )
+from src.misc import AttributeIterable, AttributeUnpackable, assert_instance
 
-def _numpy_getitem(value: list[object], indices: NDArray[np.int64]) -> NDArray:
+_runtime_type_checked_experience = [False]
+
+def _numpy_getitem(value: list[Any], indices: NDArray[np.int64]) -> NDArray:
     return np.array(value)[indices]
 
 @dataclass(slots=True, frozen=True)
-class RolloutExperience:
+class AgentExperience(AttributeUnpackable):
     state: State
     action: Action
     value: Value
@@ -24,22 +35,27 @@ class RolloutExperience:
     reward: Reward
     done: Done
 
-    def __iter__(self) -> Iterator:
-        yield from (self.state, self.action, self.value, self.prob, self.reward, self.done)
+    def __post_init__(self):
+        if not _runtime_type_checked_experience[0]:
+            assert_instance(self.state, StateValue)
+            assert_instance(self.action, Action)
+            assert_instance(self.value, Value)
+            assert_instance(self.prob, Probability)
+            assert_instance(self.reward, Reward)
+            assert_instance(self.done, Done)
+            _runtime_type_checked_experience[0] = True
 
 @dataclass(slots=True, frozen=True)
-class Minibatch:
-    states: State
-    actions: NDArray[Action]
-    values: NDArray[Value]
-    probs: NDArray[Probability]
-    rewards: NDArray[Reward]
-    dones: NDArray[Done]
+class Minibatch(AttributeUnpackable):
+    states: StoredState
+    actions: NDArray[StoredAction]
+    values: NDArray[StoredValue]
+    probs: NDArray[StoredProbability]
+    rewards: NDArray[StoredReward]
+    dones: NDArray[StoredDone]
 
-    def __iter__(self) -> Iterator:
-        yield from (self.states, self.actions, self.values, self.probs, self.rewards, self.dones)
-
-class RolloutExperiences:
+@final
+class AgentExperiences(AttributeIterable[list]):
     def __init__(self, minibatch_size: int):
         self.minibatch_size = minibatch_size
         self.states: list[State] = []
@@ -52,11 +68,16 @@ class RolloutExperiences:
     def __getitem__(self, indicies: NDArray[np.int64]) -> Minibatch:
         return Minibatch(**{
             name: _numpy_getitem(value, indicies)
-            for name, value in self._attr_iter()
+            for name, value in self.attributes_by_name()
         })
+    
+    def __len__(self) -> int:
+        # Make the reasonable inference that the amount of states
+        # is the amount of actions is the amount of values etc.
+        return len(self.states)
 
-    def minibatch_indicies(self) -> Generator[NDArray[np.int64]]:
-        n_experiences = len(self.states)
+    def minibatch_indicies(self) -> Iterator[NDArray[np.int64]]:
+        n_experiences = len(self)
         batch_start = np.arange(0, n_experiences, self.minibatch_size)
         indices = np.arange(n_experiences, dtype=np.int64)
         np.random.shuffle(indices)
@@ -65,7 +86,7 @@ class RolloutExperiences:
             for i in batch_start
         )
     
-    def add(self, experience: RolloutExperience):
+    def add(self, experience: AgentExperience):
         self.states.append(experience.state)
         self.actions.append(experience.action)
         self.values.append(experience.value)
@@ -74,19 +95,5 @@ class RolloutExperiences:
         self.dones.append(experience.done)
 
     def clear(self):
-        for field in self._attr_values():
-            field.clear()
-
-    def _attr_values(self) -> Generator[list[object]]:
-        yield from filter(lambda value: isinstance(value, list), self.__dict__.values())
-
-    def _attr_iter(self, unmangle_names: bool = False) -> Generator[tuple[str, list[object]]]:
-        def unmangle_attr_name(name: str) -> str:
-            # Convert from something like '__Class__value' to 'value'
-            return name.rsplit('_', maxsplit=1)[-1]
-        
-        for name, value in self.__dict__.items():
-            if isinstance(value, list):
-                if unmangle_names:
-                    name = unmangle_attr_name(name)
-                yield name, value
+        for value in self.attribute_values():
+            value.clear()
