@@ -1,28 +1,44 @@
+import random
 import types
+from collections.abc import Callable, Iterable, Iterator
 from functools import partial
-from typing import Any, Callable, Generic, Iterable, Iterator, Optional, TypeVar
-import numpy as np
-from typing_extensions import Self, TypeAliasType
+from typing import Any, Generic, TypeAlias, TypeVar
 
 import log
+import numpy as np
+import torch
+from typing_extensions import Self, TypeAliasType
 
 T = TypeVar("T")
 Sentinel = TypeVar("Sentinel")
 
+_TypeOrAlias: TypeAlias = type | TypeAliasType
+
+
 def flatten_dim(dim: int | tuple[int]) -> int:
     return dim[0] if isinstance(dim, tuple) else dim
 
-def assert_instance(obj: object, type_or_alias: type | TypeAliasType):
-    def assertion(value: bool, expected: type | TypeAliasType, actual: type | TypeAliasType):
-        assert value, log.colours.RED(f"Expected {expected.__name__!r}, got {actual.__name__!r}")
-        
+
+def set_all_seeds(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
+    def assertion(value: bool, expected: _TypeOrAlias, actual: _TypeOrAlias):
+        assert value, log.colours.RED(
+            f"Expected {expected.__name__!r}, got {actual.__name__!r}"
+        )
+
     if isinstance(obj, np.ndarray):
         assertion(obj.dtype.type is type_or_alias, type_or_alias, obj.dtype.type)
         return
-    
+
     unaliased = type_or_alias
     if isinstance(type_or_alias, TypeAliasType):
         unaliased = type_or_alias.__value__
+
     cannot_check = False
     reason = None
 
@@ -41,14 +57,17 @@ def assert_instance(obj: object, type_or_alias: type | TypeAliasType):
     else:
         assertion(result, unaliased, type(obj))
 
+
 def iter_factory(
-    iterable: Iterable[T], 
-    sentinel: Optional[Sentinel] = None
-) -> Callable[[], Optional[T | Sentinel]]:
+    iterable: Iterable[T], sentinel: Sentinel | None = None
+) -> Callable[[], T | Sentinel | None]:
     iterator = iter(iterable)
-    def iterator_func() -> Optional[T | Sentinel]:
+
+    def iterator_func() -> T | Sentinel | None:
         return next(iterator, sentinel)
+
     return iterator_func
+
 
 class AttributeIterable(Generic[T]):
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
@@ -58,8 +77,8 @@ class AttributeIterable(Generic[T]):
         except (AttributeError, IndexError, TypeError) as exc:
             raise TypeError(
                 f"Unable to retrieve generic parameter of instance {self!r}"
-            ) from exc 
-        
+            ) from exc
+
         # We have essentially 'reified' T by finding its specialisation
         # at runtime, that is, for AttributeIterable[list], finding
         # the actual 'list' type object
@@ -67,19 +86,19 @@ class AttributeIterable(Generic[T]):
         assert isinstance(generic_arg, type)
         # This should be the case anyway
         assert hasattr(generic_arg, "__instancecheck__")
-        self.T = generic_arg
+        self._T = generic_arg
         return self
-    
+
     def attribute_values(self) -> Iterator[T]:
         yield from filter(
-            lambda value: isinstance(value, self.T),
-            self.__dict__.values()
+            lambda value: isinstance(value, self._T), self.__dict__.values()
         )
 
     def attributes_by_name(self) -> Iterator[tuple[str, T]]:
         for name, value in self.__dict__.items():
-            if isinstance(value, self.T):
+            if isinstance(value, self._T):
                 yield name, value
+
 
 class AttributeUnpackable:
     __slots__ = ()
