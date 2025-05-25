@@ -9,6 +9,7 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
 
 from src.agent import Agent
 from src.batching import AgentExperience
+from src.parameters import AlgorithmOptions
 from src.types_ import Observation, Reward
 
 CHECKPOINTS_DIR = Path(__file__).parent.parent.joinpath("checkpoints")
@@ -26,11 +27,13 @@ class AgentTrainer:
         env: Overcooked,
         agent1: Agent,
         agent2: Agent,
+        options: AlgorithmOptions,
         learn_episodes: int = 20,
         n_agents: int = 2,
     ):
         assert n_agents == 2
         self.env = env
+        self.options = options
         self.learn_episodes = learn_episodes
         self.n_agents = n_agents
         self.agents = (agent1, agent2)
@@ -40,6 +43,13 @@ class AgentTrainer:
         for game_number in range(1, n_games + 1):
             game_results = self.play_game(game_number)
             results.append(game_results)
+            log.rl(
+                f"Game {game_number}",
+                "agent 1 total reward:",
+                sum(game_results.rewards[0]),
+                "agent 2 total reward:",
+                sum(game_results.rewards[1]),
+            )
         return results
 
     def play_game(self, game_number: int) -> GameResults:
@@ -83,15 +93,17 @@ class AgentTrainer:
 
             observations = next_observations
             state = next_state
-            log.rl(
-                f"[Game {game_number}; Episode {episode}]",
-                "agent 1 reward:",
-                rewards[0][-1],
-                "agent 2 reward:",
-                rewards[1][-1],
-            )
+            # log.rl(
+            #     f"[Game {game_number}; Episode {episode}]",
+            #     "agent 1 reward:",
+            #     rewards[0][-1],
+            #     "agent 2 reward:",
+            #     rewards[1][-1],
+            # )
             episode += 1
 
+        for agent in self.agents:
+            agent.experiences.reset()
         return GameResults(rewards, states)
 
     def save_agents(self):

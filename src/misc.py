@@ -1,4 +1,6 @@
+import functools
 import random
+import time
 import types
 from collections.abc import Callable, Iterable, Iterator
 from functools import partial
@@ -12,6 +14,7 @@ from typing_extensions import Self, TypeAliasType
 T = TypeVar("T")
 Sentinel = TypeVar("Sentinel")
 
+_Func = Callable[..., Any]
 _TypeOrAlias: TypeAlias = type | TypeAliasType
 
 
@@ -67,6 +70,39 @@ def iter_factory(
         return next(iterator, sentinel)
 
     return iterator_func
+
+
+def andjoin(iterable: Iterable, separator: str = ", ") -> str:
+    *elements, last = iterable
+    if not elements:
+        return str(last)
+    return f"{separator.join(elements)} and {last}"
+
+
+def format_time(seconds: float) -> str:
+    measurements = [("hour", 3600), ("minute", 60), ("second", 1)]
+    parts = []
+
+    for measurement_name, measurement_in_seconds in measurements:
+        measurement_quantity, seconds = divmod(seconds, measurement_in_seconds)
+        if measurement_quantity > 0:
+            if measurement_quantity != 1:
+                measurement_name += "s"
+            parts.append(f"{int(measurement_quantity)} {measurement_name}")
+
+    return andjoin(parts) if parts else "0 seconds"
+
+
+def timed(func: _Func):
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any):
+        start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        log(f"{func.__name__!r} took", format_time(end_time - start_time), "to execute")
+        return result
+
+    return wrapper
 
 
 class AttributeIterable(Generic[T]):
