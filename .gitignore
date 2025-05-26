@@ -181,6 +181,8 @@ cython_debug/
 .cursorindexingignore
 
 # Other
+.DS_Store
 .vscode/
 main.py
 checkpoints/
+runs/

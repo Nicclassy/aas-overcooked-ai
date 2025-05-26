@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from pathlib import Path
 
 import log
 import numpy as np
@@ -9,10 +8,9 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
 
 from src.agent import Agent
 from src.batching import AgentExperience
+from src.misc import CHECKPOINTS_DIR
 from src.parameters import AlgorithmOptions
 from src.types_ import Observation, Reward
-
-CHECKPOINTS_DIR = Path(__file__).parent.parent.joinpath("checkpoints")
 
 
 @dataclass

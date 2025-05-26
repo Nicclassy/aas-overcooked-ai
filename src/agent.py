@@ -1,17 +1,21 @@
 from functools import partial
-from typing import final
+from typing import ClassVar, final
 
 import torch
+import torch.utils.tensorboard
 
 from src.batching import AgentExperiences
 from src.misc import flatten_dim
 from src.networks import ActorNetwork, CriticNetwork
 from src.parameters import AlgorithmOptions, Hyperparameters
 from src.types_ import Action, Done, Observation, Probability, Reward, Value
+from src.utils import get_summary_writer
 
 
 @final
 class Agent:
+    _n_agents_created: ClassVar[int] = 0
+
     def __init__(
         self,
         n_actions: int,
@@ -26,12 +30,16 @@ class Agent:
         self.n_epochs = parameters.n_epochs
         self.gae_lambda = parameters.gae_lambda
         self.c1 = parameters.critic_coefficient
+        self.total_epochs = 0
 
         input_dim = flatten_dim(input_dim)
         assert input_dim > parameters.actor_fc1_dim
         assert input_dim > parameters.critic_fc1_dim
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
         self.critic = CriticNetwork(input_dim, parameters)
+
+        self.__class__._n_agents_created += 1
+        self.agent_number = self.__class__._n_agents_created
 
     def choose_action(
         self, observation: Observation
@@ -44,6 +52,7 @@ class Agent:
         return action.item(), prob.item(), value.item()
 
     def learn(self):
+        writer = get_summary_writer(write=self.agent_number == 1)
         computed_advantages = self.compute_advantages(
             self.experiences.values, self.experiences.rewards, self.experiences.dones
         )
@@ -85,12 +94,24 @@ class Agent:
                 self.actor.optimizer.step()
                 self.critic.optimizer.step()
 
+            writer.add_scalar(
+                "Policy/KL", (old_probs - new_probs).mean(), self.total_epochs
+            )
+            writer.add_scalar(
+                "Policy/Entropy", dist.entropy().mean().item(), self.total_epochs
+            )
+            writer.add_scalar("Loss/Actor", actor_loss.item(), self.total_epochs)
+            writer.add_scalar("Loss/Critic", critic_loss.item(), self.total_epochs)
+            writer.add_scalar("Loss/Total", total_loss.item(), self.total_epochs)
+            self.total_epochs += 1
+
     def compute_advantages(
         self, values: list[Value], rewards: list[Reward], dones: list[Done]
     ) -> torch.Tensor:
         n_experiences = len(self.experiences)
         advantages = torch.empty(n_experiences, dtype=torch.float32)
         gae = 0.0
+
         for t in reversed(range(n_experiences)):
             if t == n_experiences - 1:
                 next_value = 0.0

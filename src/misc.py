@@ -1,14 +1,13 @@
 import functools
-import random
 import time
 import types
 from collections.abc import Callable, Iterable, Iterator
 from functools import partial
+from pathlib import Path
 from typing import Any, Generic, TypeAlias, TypeVar
 
 import log
 import numpy as np
-import torch
 from typing_extensions import Self, TypeAliasType
 
 T = TypeVar("T")
@@ -18,14 +17,12 @@ _Func = Callable[..., Any]
 _TypeOrAlias: TypeAlias = type | TypeAliasType
 
 
+FOLDER_DIR = Path(__file__).resolve().parent.parent
+CHECKPOINTS_DIR = FOLDER_DIR / "checkpoints"
+
+
 def flatten_dim(dim: int | tuple[int]) -> int:
     return dim[0] if isinstance(dim, tuple) else dim
-
-
-def set_all_seeds(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
 
 
 def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
