@@ -2,19 +2,18 @@ from functools import partial
 from typing import ClassVar, final
 
 import torch
-import torch.utils.tensorboard
 
 from src.batching import AgentExperiences
 from src.misc import flatten_dim
 from src.networks import ActorNetwork, CriticNetwork
 from src.parameters import AlgorithmOptions, Hyperparameters
 from src.types_ import Action, Done, Observation, Probability, Reward, Value
-from src.utils import get_summary_writer
+from src.utils import GlobalState, summary_writer_factory
 
 
 @final
 class Agent:
-    _n_agents_created: ClassVar[int] = 0
+    _n_created: ClassVar[int] = 0
 
     def __init__(
         self,
@@ -38,8 +37,8 @@ class Agent:
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
         self.critic = CriticNetwork(input_dim, parameters)
 
-        self.__class__._n_agents_created += 1
-        self.agent_number = self.__class__._n_agents_created
+        Agent._n_created += 1
+        self.agent_number = Agent._n_created
 
     def choose_action(
         self, observation: Observation
@@ -52,10 +51,19 @@ class Agent:
         return action.item(), prob.item(), value.item()
 
     def learn(self):
-        writer = get_summary_writer(write=self.agent_number == 1)
+        def mean(values: list) -> torch.Tensor:
+            return torch.tensor(values).mean()
+
+        writer = summary_writer_factory(agent_number=self.agent_number, write=True, game_number=GlobalState.game_number)
         computed_advantages = self.compute_advantages(
             self.experiences.values, self.experiences.rewards, self.experiences.dones
         )
+
+        kl_values = []
+        entropy_values = []
+        actor_losses = []
+        critic_losses = []
+        total_losses = []
 
         for _ in range(self.n_epochs):
             for minibatch_indicies in self.experiences.minibatch_indicies():
@@ -94,16 +102,22 @@ class Agent:
                 self.actor.optimizer.step()
                 self.critic.optimizer.step()
 
-            writer.add_scalar(
-                "Policy/KL", (old_probs - new_probs).mean(), self.total_epochs
-            )
-            writer.add_scalar(
-                "Policy/Entropy", dist.entropy().mean().item(), self.total_epochs
-            )
-            writer.add_scalar("Loss/Actor", actor_loss.item(), self.total_epochs)
-            writer.add_scalar("Loss/Critic", critic_loss.item(), self.total_epochs)
-            writer.add_scalar("Loss/Total", total_loss.item(), self.total_epochs)
+            kl_values.append((old_probs - new_probs).mean())
+            entropy_values.append(dist.entropy().mean().item())
+            actor_losses.append(actor_loss.item())
+            critic_losses.append(critic_loss.item())
+            total_losses.append(total_loss.item())
             self.total_epochs += 1
+
+        writer.add_scalar(
+            "Policy/KL", mean(kl_values), self.total_epochs
+        )
+        writer.add_scalar(
+            "Policy/Entropy", mean(entropy_values), self.total_epochs
+        )
+        writer.add_scalar("Loss/Actor", mean(actor_losses), self.total_epochs)
+        writer.add_scalar("Loss/Critic", mean(critic_losses), self.total_epochs)
+        writer.add_scalar("Loss/Total", mean(total_losses), self.total_epochs)
 
     def compute_advantages(
         self, values: list[Value], rewards: list[Reward], dones: list[Done]
