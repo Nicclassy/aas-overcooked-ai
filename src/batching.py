@@ -82,7 +82,10 @@ class AgentExperiences(AttributeIterable[np.ndarray]):
         batch_start = np.arange(0, n_experiences, self.minibatch_size)
         indices = np.arange(n_experiences, dtype=np.int64)
         np.random.shuffle(indices)
-        yield from (indices[i : i + self.minibatch_size] for i in batch_start)
+        yield from (
+            indices[i:i + self.minibatch_size]
+            for i in batch_start
+        )
 
     def add(self, experience: AgentExperience):
         self.states.append(experience.state)

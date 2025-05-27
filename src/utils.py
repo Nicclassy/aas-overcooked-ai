@@ -1,21 +1,25 @@
 import asyncio
+import atexit
 import os
 import random
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, ClassVar, Literal, Optional
 
 import log
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from typing_extensions import Never
 
 from src.misc import FOLDER_DIR
 
-_writer: SummaryWriter | None = None
-
-LOG_DIR = FOLDER_DIR / "runs"
+RUNS_DIR = FOLDER_DIR / "runs"
 
 DEFAULT_TENSORBOARD_PORT = 6006
 DELETE_PREVIOUS_TENSORBOARD_RUNS = True
+
+_writers: dict[str, SummaryWriter] = {}
+_tensorboard_init = [False]
 
 
 def set_all_seeds(seed: int):
@@ -32,24 +36,68 @@ class NullWriter:
         return noop
 
 
-def get_summary_writer(write: bool = True) -> SummaryWriter | NullWriter:
-    global _writer
+class GlobalState:
+    game_number: ClassVar[int] = 0
+
+    def __init__(self) -> Never:
+        raise Exception(f"{self.__class__.__name__!r} is not instantiable")
+
+
+def summary_writer_factory(
+    *,
+    agent_number: int | None = None,
+    game_number: int | None = None,
+    write: bool = True,
+) -> SummaryWriter | NullWriter:
+    def writers_key() -> Optional[str]:
+        if agent_number is not None and game_number is not None:
+            return f"{agent_number}:{game_number}"
+        if agent_number is not None:
+            return str(agent_number)
+        return None
+
     if not write:
         return NullWriter()
 
-    log_dir = LOG_DIR
-    if _writer is not None:
-        return _writer
+    if game_number is not None:
+        assert agent_number is not None
 
-    if not log_dir.exists():
-        log_dir.mkdir()
+    if agent_number is not None and game_number is not None:
+        log_dir = RUNS_DIR / f"Agent {agent_number} (Game {game_number})"
+    elif agent_number is not None:
+        log_dir = RUNS_DIR / f"Agent {agent_number}"
+    else:
+        log_dir = RUNS_DIR
 
-    if DELETE_PREVIOUS_TENSORBOARD_RUNS:
-        for path in filter(lambda p: p.name.startswith("events"), log_dir.iterdir()):
+    key = writers_key()
+    if (writer := _writers.get(key)) is not None:
+        return writer
+
+    RUNS_DIR.mkdir(exist_ok=True)
+    if DELETE_PREVIOUS_TENSORBOARD_RUNS and not _tensorboard_init[0]:
+        _delete_previous_tensorboard_runs()
+        _tensorboard_init[0] = True
+
+    _writers[key] = writer = SummaryWriter(log_dir=log_dir)
+    return writer
+
+
+def close_writers():
+    for writer in _writers.values():
+        writer.close()
+
+
+def _delete_previous_tensorboard_runs(runs_dir: Path = RUNS_DIR):
+    def is_tensorboard_file(filename: str) -> bool:
+        return filename.startswith("events")
+
+    for dirpath, _, filenames in os.walk(runs_dir):
+        for filename in filter(is_tensorboard_file, filenames):
+            path = Path(dirpath).joinpath(filename)
             path.unlink()
 
-    _writer = SummaryWriter(log_dir=log_dir)
-    return _writer
+    for path in filter(Path.is_dir, runs_dir.iterdir()):
+        path.rmdir()
 
 
 async def _create_tensorboard_process(
@@ -90,8 +138,15 @@ async def _run_tensorboard(log_dir: os.PathLike, port: int):
     await process.wait()
 
 
-def run_tensorboard(log_dir: os.PathLike = LOG_DIR, port: int | None = None):
+def run_tensorboard(log_dir: os.PathLike = RUNS_DIR, port: int | None = None):
     try:
         asyncio.run(_run_tensorboard(log_dir, port or DEFAULT_TENSORBOARD_PORT))
     except KeyboardInterrupt:
         pass
+
+
+def on_program_exit():
+    close_writers()
+
+
+atexit.register(on_program_exit)

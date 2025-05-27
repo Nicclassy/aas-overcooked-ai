@@ -4,7 +4,7 @@ import types
 from collections.abc import Callable, Iterable, Iterator
 from functools import partial
 from pathlib import Path
-from typing import Any, Generic, TypeAlias, TypeVar
+from typing import Any, Generic, Optional, TypeAlias, TypeVar
 
 import log
 import numpy as np
@@ -15,7 +15,6 @@ Sentinel = TypeVar("Sentinel")
 
 _Func = Callable[..., Any]
 _TypeOrAlias: TypeAlias = type | TypeAliasType
-
 
 FOLDER_DIR = Path(__file__).resolve().parent.parent
 CHECKPOINTS_DIR = FOLDER_DIR / "checkpoints"
@@ -58,15 +57,15 @@ def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
         assertion(result, unaliased, type(obj))
 
 
+# fmt: off
 def iter_factory(
-    iterable: Iterable[T], sentinel: Sentinel | None = None
-) -> Callable[[], T | Sentinel | None]:
+    iterable: Iterable[T], sentinel: Optional[Sentinel] = None
+) -> Callable[[], Optional[T | Sentinel]]:
     iterator = iter(iterable)
-
     def iterator_func() -> T | Sentinel | None:
         return next(iterator, sentinel)
-
     return iterator_func
+# fmt: on
 
 
 def andjoin(iterable: Iterable, separator: str = ", ") -> str:

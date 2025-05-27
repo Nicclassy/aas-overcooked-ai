@@ -11,6 +11,7 @@ from src.batching import AgentExperience
 from src.misc import CHECKPOINTS_DIR
 from src.parameters import AlgorithmOptions
 from src.types_ import Observation, Reward
+from src.utils import GlobalState
 
 
 @dataclass
@@ -26,20 +27,19 @@ class AgentTrainer:
         agent1: Agent,
         agent2: Agent,
         options: AlgorithmOptions,
-        learn_episodes: int = 20,
-        n_agents: int = 2,
+        learn_episodes: int = 20
     ):
-        assert n_agents == 2
         self.env = env
         self.options = options
         self.learn_episodes = learn_episodes
-        self.n_agents = n_agents
+        self.n_agents = 2
         self.agents = (agent1, agent2)
 
     def train_agents(self, n_games: int = 1) -> list[GameResults]:
         results = []
         for game_number in range(1, n_games + 1):
-            game_results = self.play_game(game_number)
+            GlobalState.game_number = game_number
+            game_results = self.play_overcooked_game()
             results.append(game_results)
             log.rl(
                 f"Game {game_number}",
@@ -50,7 +50,7 @@ class AgentTrainer:
             )
         return results
 
-    def play_game(self, game_number: int) -> GameResults:
+    def play_overcooked_game(self) -> GameResults:
         info = self.env.reset()
         observations = list(info["both_agent_obs"])
         state = info["overcooked_state"]
@@ -86,18 +86,11 @@ class AgentTrainer:
                 rewards[i].append(individual_reward)
 
             if episode % self.learn_episodes == 0:
-                for i, agent in enumerate(self.agents, start=1):
+                for agent in self.agents:
                     agent.learn()
 
             observations = next_observations
             state = next_state
-            # log.rl(
-            #     f"[Game {game_number}; Episode {episode}]",
-            #     "agent 1 reward:",
-            #     rewards[0][-1],
-            #     "agent 2 reward:",
-            #     rewards[1][-1],
-            # )
             episode += 1
 
         for agent in self.agents:
