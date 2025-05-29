@@ -4,20 +4,25 @@ import types
 from collections.abc import Callable, Iterable, Iterator
 from functools import partial
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeAlias, TypeVar
+from typing import Any, Generic, Optional, TypeAlias, TypeVar, overload
 
 import log
 import numpy as np
-from typing_extensions import Self, TypeAliasType
+from typing_extensions import ParamSpec, Self, TypeAliasType
 
 T = TypeVar("T")
+P = ParamSpec("R")
+R = TypeVar("R")
 Sentinel = TypeVar("Sentinel")
 
-_Func = Callable[..., Any]
+_ParamSpecCallable: TypeAlias = Callable[P, R]
 _TypeOrAlias: TypeAlias = type | TypeAliasType
 
 FOLDER_DIR = Path(__file__).resolve().parent.parent
 CHECKPOINTS_DIR = FOLDER_DIR / "checkpoints"
+
+_NO_ARG_PROVIDED = object()
+_TIME_MEASUREMENTS = [("hour", 3600), ("minute", 60), ("second", 1)]
 
 
 def flatten_dim(dim: int | tuple[int]) -> int:
@@ -57,15 +62,13 @@ def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
         assertion(result, unaliased, type(obj))
 
 
-# fmt: off
 def iter_factory(
     iterable: Iterable[T], sentinel: Optional[Sentinel] = None
 ) -> Callable[[], Optional[T | Sentinel]]:
     iterator = iter(iterable)
-    def iterator_func() -> T | Sentinel | None:
+    def iterator_func() -> Optional[T | Sentinel]:
         return next(iterator, sentinel)
     return iterator_func
-# fmt: on
 
 
 def andjoin(iterable: Iterable, separator: str = ", ") -> str:
@@ -75,30 +78,48 @@ def andjoin(iterable: Iterable, separator: str = ", ") -> str:
     return f"{separator.join(elements)} and {last}"
 
 
-def format_time(seconds: float) -> str:
-    measurements = [("hour", 3600), ("minute", 60), ("second", 1)]
+def format_time(seconds: float, include_milliseconds: bool) -> str:
     parts = []
+    for unit, unit_in_seconds in _TIME_MEASUREMENTS:
+        unit_quantity, seconds = divmod(seconds, unit_in_seconds)
+        if unit_quantity > 0:
+            if unit_quantity != 1:
+                unit += "s"
+            parts.append(f"{int(unit_quantity)} {unit}")
 
-    for measurement_name, measurement_in_seconds in measurements:
-        measurement_quantity, seconds = divmod(seconds, measurement_in_seconds)
-        if measurement_quantity > 0:
-            if measurement_quantity != 1:
-                measurement_name += "s"
-            parts.append(f"{int(measurement_quantity)} {measurement_name}")
+    if parts and include_milliseconds:
+        milliseconds = int(seconds * 1000)
+        if milliseconds > 0:
+            unit = "milisecond" if milliseconds == 1 else "miliseconds"
+            parts.append(f"{milliseconds} {unit}")
 
-    return andjoin(parts) if parts else "0 seconds"
+    return andjoin(parts) if parts else "<1 second"
 
+@overload
+def timed(obj: _ParamSpecCallable, /) -> _ParamSpecCallable: ...
 
-def timed(func: _Func):
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any):
-        start_time = time.perf_counter()
-        result = func(*args, **kwargs)
-        end_time = time.perf_counter()
-        log(f"{func.__name__!r} took", format_time(end_time - start_time), "to execute")
-        return result
+@overload
+def timed(
+    *,
+    include_milliseconds: bool = False
+) -> Callable[[_ParamSpecCallable], _ParamSpecCallable]: ...
 
-    return wrapper
+def timed(obj: _ParamSpecCallable | object = _NO_ARG_PROVIDED, /, *, include_milliseconds: bool = False):
+    def decorator(func: _ParamSpecCallable):
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            start_time = time.perf_counter()
+            result = func(*args, **kwargs)
+            end_time = time.perf_counter()
+            elapsed_time = format_time(end_time - start_time, include_milliseconds)
+            log(f"{func.__name__!r} took", elapsed_time, "to execute")
+            return result
+        return wrapper
+
+    assert callable(obj) or obj is _NO_ARG_PROVIDED
+    if obj is _NO_ARG_PROVIDED:
+        return decorator
+    return decorator(obj)
 
 
 class AttributeIterable(Generic[T]):
