@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import os
 import random
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional
 
@@ -15,8 +16,8 @@ from src.misc import FOLDER_DIR
 
 RUNS_DIR = FOLDER_DIR / "runs"
 
-DEFAULT_TENSORBOARD_PORT = 6006
-DELETE_PREVIOUS_TENSORBOARD_RUNS = True
+_DEFAULT_TENSORBOARD_PORT = 6006
+_DELETE_PREVIOUS_TENSORBOARD_RUNS = True
 
 _writers: dict[str, SummaryWriter] = {}
 _tensorboard_init = [False]
@@ -37,7 +38,9 @@ class NullWriter:
 
 
 class GlobalState:
+    is_training: ClassVar[bool] = True
     game_number: ClassVar[int] = 0
+    n_agents_created: ClassVar[int] = 0
 
     def __init__(self) -> Never:
         raise Exception(f"{self.__class__.__name__!r} is not instantiable")
@@ -45,24 +48,32 @@ class GlobalState:
 
 def summary_writer_factory(
     *,
-    agent_number: int | None = None,
-    game_number: int | None = None,
+    agent_number: Optional[int] = None,
+    game_number: Optional[int] = None,
+    custom_name: Optional[str] = None,
+    predicate: Optional[Callable[..., bool]] = None,
     write: bool = True,
 ) -> SummaryWriter | NullWriter:
     def writers_key() -> Optional[str]:
+        if custom_name is not None:
+            return custom_name
         if agent_number is not None and game_number is not None:
             return f"{agent_number}:{game_number}"
         if agent_number is not None:
             return str(agent_number)
         return None
 
-    if not write:
+    if GlobalState.is_training or not write or (predicate is not None and not predicate()):
         return NullWriter()
 
+    if custom_name is not None:
+        assert agent_number is None and game_number is None
     if game_number is not None:
         assert agent_number is not None
 
-    if agent_number is not None and game_number is not None:
+    if custom_name is not None:
+        log_dir = RUNS_DIR / custom_name
+    elif agent_number is not None and game_number is not None:
         log_dir = RUNS_DIR / f"Agent {agent_number} (Game {game_number})"
     elif agent_number is not None:
         log_dir = RUNS_DIR / f"Agent {agent_number}"
@@ -74,7 +85,7 @@ def summary_writer_factory(
         return writer
 
     RUNS_DIR.mkdir(exist_ok=True)
-    if DELETE_PREVIOUS_TENSORBOARD_RUNS and not _tensorboard_init[0]:
+    if _DELETE_PREVIOUS_TENSORBOARD_RUNS and not _tensorboard_init[0]:
         _delete_previous_tensorboard_runs()
         _tensorboard_init[0] = True
 
@@ -140,7 +151,7 @@ async def _run_tensorboard(log_dir: os.PathLike, port: int):
 
 def run_tensorboard(log_dir: os.PathLike = RUNS_DIR, port: int | None = None):
     try:
-        asyncio.run(_run_tensorboard(log_dir, port or DEFAULT_TENSORBOARD_PORT))
+        asyncio.run(_run_tensorboard(log_dir, port or _DEFAULT_TENSORBOARD_PORT))
     except KeyboardInterrupt:
         pass
 
