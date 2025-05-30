@@ -22,7 +22,7 @@ from src.types_ import (
     Value,
 )
 
-_runtime_type_checked_experience = [False]
+_runtime_type_checked_experience = [True]
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,31 +56,33 @@ class Minibatch(AttributeUnpackable):
 
 
 @final
-class AgentExperiences(AttributeIterable[np.ndarray]):
+class AgentExperiences(AttributeIterable[list]):
     def __init__(self, minibatch_size: int, size: int):
         self.minibatch_size = minibatch_size
-        self.states: list[StoredState] = []
-        self.actions: NDArray[StoredAction] = np.zeros(size, dtype=StoredAction)
-        self.values: NDArray[StoredValue] = np.zeros(size, dtype=StoredValue)
-        self.probs: NDArray[StoredProbability] = np.zeros(size, dtype=StoredProbability)
-        self.rewards: NDArray[StoredReward] = np.zeros(size, dtype=StoredReward)
-        self.dones: NDArray[StoredDone] = np.zeros(size, dtype=StoredDone)
-        self.step = 0
+        self.states: list[StoredState] = [0] * size
+        self.actions: list[StoredAction] = [0] * size
+        self.values: list[StoredValue] = [0] * size
+        self.probs: list[StoredProbability] = [0] * size
+        self.rewards: list[StoredReward] = [0] * size
+        self.dones: list[StoredDone] = [0] * size
+        self.index = 0
 
-    def __getitem__(self, indicies: NDArray[np.int64]) -> Minibatch:
-        values = {name: value[indicies] for name, value in self.attributes_by_name()}
-        values["states"] = np.array(self.states)[indicies]
-        return Minibatch(**values)
+    def __getitem__(self, indicies: NDArray[np.int32]) -> Minibatch:
+        return Minibatch(**{
+            name: np.array(value)[indicies]
+            for name, value in self.attributes_by_name()
+        })
 
     def __len__(self) -> int:
-        # Make the reasonable inference that the amount of states
-        # is the amount of actions is the amount of values etc.
-        return len(self.states)
+        return self.index
 
-    def minibatch_indicies(self) -> Iterator[NDArray[np.int64]]:
-        n_experiences = self.step
+    def minibatch_indicies(self, use_minibatches: bool = True) -> Iterator[NDArray[np.int32]]:
+        n_experiences = len(self)
+        if not use_minibatches:
+            yield np.arange(n_experiences)
+
         batch_start = np.arange(0, n_experiences, self.minibatch_size)
-        indices = np.arange(n_experiences, dtype=np.int64)
+        indices = np.arange(n_experiences, dtype=np.int32)
         np.random.shuffle(indices)
         yield from (
             indices[i:i + self.minibatch_size]
@@ -88,14 +90,13 @@ class AgentExperiences(AttributeIterable[np.ndarray]):
         )
 
     def add(self, experience: AgentExperience):
-        self.states.append(experience.state)
-        self.actions[self.step] = experience.action
-        self.values[self.step] = experience.value
-        self.probs[self.step] = experience.prob
-        self.rewards[self.step] = experience.reward
-        self.dones[self.step] = experience.done
-        self.step += 1
+        self.states[self.index] = experience.state
+        self.actions[self.index] = experience.action
+        self.values[self.index] = experience.value
+        self.probs[self.index] = experience.prob
+        self.rewards[self.index] = experience.reward
+        self.dones[self.index] = experience.done
+        self.index += 1
 
     def reset(self):
-        self.states.clear()
-        self.step = 0
+        self.index = 0

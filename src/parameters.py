@@ -3,13 +3,14 @@ from dataclasses import dataclass
 
 @dataclass
 class Hyperparameters:
-    alpha: float = 2e-05
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
+    alpha: float = 8e-4
+    gamma: float = 0.95
+    gae_lambda: float = 1
     epsilon: float = 0.2
-    n_epochs: int = 10
-    minibatch_size: int = 5
+    n_epochs: int = 12
+    minibatch_size: int = 4000
     critic_coefficient: float = 0.5
+    entropy_coefficient: float = 0.001
 
     actor_fc1_dim: int = 64
     actor_fc2_dim: int = 64
@@ -23,5 +24,12 @@ class Hyperparameters:
 
 @dataclass
 class AlgorithmOptions:
+    rollout_episodes: int = 10
+    learn_episodes: int = 12
+    total_episodes: int = 1000
     horizon: int = 400
+    use_tqdm: bool = False
+    use_minibatches: bool = False
     normalise_advantages: bool = True
+    reset_epochs_after_game: bool = True
+    reset_experiences_each_train: bool = True
