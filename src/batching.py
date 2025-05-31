@@ -22,7 +22,8 @@ from src.types_ import (
     Value,
 )
 
-_runtime_type_checked_experience = [True]
+_runtime_type_check_experience = False
+_runtime_type_checked_experience = [False]
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,7 +36,7 @@ class AgentExperience(AttributeUnpackable):
     done: Done
 
     def __post_init__(self):
-        if not _runtime_type_checked_experience[0]:
+        if _runtime_type_check_experience and not _runtime_type_checked_experience[0]:
             assert_instance(self.state, StateValue)
             assert_instance(self.action, Action)
             assert_instance(self.value, Value)
@@ -43,17 +44,6 @@ class AgentExperience(AttributeUnpackable):
             assert_instance(self.reward, Reward)
             assert_instance(self.done, Done)
             _runtime_type_checked_experience[0] = True
-
-
-@dataclass(slots=True, frozen=True)
-class Minibatch(AttributeUnpackable):
-    states: StoredState
-    actions: NDArray[StoredAction]
-    values: NDArray[StoredValue]
-    probs: NDArray[StoredProbability]
-    rewards: NDArray[StoredReward]
-    dones: NDArray[StoredDone]
-
 
 @final
 class AgentExperiences(AttributeIterable[list]):
@@ -67,20 +57,11 @@ class AgentExperiences(AttributeIterable[list]):
         self.dones: list[StoredDone] = [0] * size
         self.index = 0
 
-    def __getitem__(self, indicies: NDArray[np.int32]) -> Minibatch:
-        return Minibatch(**{
-            name: np.array(value)[indicies]
-            for name, value in self.attributes_by_name()
-        })
-
     def __len__(self) -> int:
         return self.index
 
-    def minibatch_indicies(self, use_minibatches: bool = True) -> Iterator[NDArray[np.int32]]:
+    def minibatch_indicies(self) -> Iterator[NDArray[np.int32]]:
         n_experiences = len(self)
-        if not use_minibatches:
-            yield np.arange(n_experiences)
-
         batch_start = np.arange(0, n_experiences, self.minibatch_size)
         indices = np.arange(n_experiences, dtype=np.int32)
         np.random.shuffle(indices)

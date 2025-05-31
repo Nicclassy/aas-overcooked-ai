@@ -8,6 +8,7 @@ from typing import Any, Generic, Optional, TypeAlias, TypeVar, overload
 
 import log
 import numpy as np
+from numpy.typing import NDArray
 from typing_extensions import ParamSpec, Self, TypeAliasType
 
 T = TypeVar("T")
@@ -27,6 +28,9 @@ _TIME_MEASUREMENTS = [("hour", 3600), ("minute", 60), ("second", 1)]
 
 def flatten_dim(dim: int | tuple[int]) -> int:
     return dim[0] if isinstance(dim, tuple) else dim
+
+def numpy_getitem(collection: T, indicies: NDArray[np.int32], *, index: bool) -> T:
+    return collection[indicies] if index else collection
 
 
 def assert_instance(obj: object, type_or_alias: _TypeOrAlias):

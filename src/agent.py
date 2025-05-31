@@ -1,13 +1,23 @@
-from functools import partial
 from typing import final
 
+import numpy as np
 import torch
+from numpy.typing import NDArray
 
 from src.batching import AgentExperiences
-from src.misc import flatten_dim
+from src.misc import flatten_dim, numpy_getitem
 from src.networks import ActorNetwork, CriticNetwork
 from src.parameters import AlgorithmOptions, Hyperparameters
-from src.types_ import Action, Done, Observation, Probability, Reward, Value
+from src.types_ import (
+    Action,
+    Done,
+    Observation,
+    Probability,
+    Reward,
+    StoredAction,
+    StoredProbability,
+    Value,
+)
 from src.utils import GlobalState, summary_writer_factory
 
 
@@ -41,7 +51,7 @@ class Agent:
         assert input_dim >= parameters.critic_fc1_dim, \
             f"Input dim {input_dim} should be larger than layer 1 dim {parameters.critic_fc1_dim}"
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
-        self.critic = CriticNetwork(input_dim, parameters)
+        self.critic = CriticNetwork(input_dim * (multiple_agents + 1), parameters)
 
         GlobalState.n_agents_created += 1
         self.agent_number = GlobalState.n_agents_created
@@ -56,13 +66,13 @@ class Agent:
         prob = dist.log_prob(action)
         return action.item(), prob.item(), value.item()
 
-    def choose_actions(self, observations: Observation):
-        state = torch.from_numpy(observations)
-        dist = self.actor(state)
-        values = self.critic(state)
+    def choose_actions(self, observations: Observation) -> tuple[NDArray[StoredAction], NDArray[StoredProbability], Value]:
+        states = torch.from_numpy(observations)
+        dist = self.actor(states)
+        value = self.critic(states.view(-1))
         actions = dist.sample()
         probs = dist.log_prob(actions)
-        return actions.numpy(), probs.numpy(), values.numpy()
+        return actions.numpy(), probs.numpy(), value.item()
 
     def learn(self):
         def mean(values: list) -> torch.Tensor:
@@ -75,9 +85,14 @@ class Agent:
             predicate=lambda: GlobalState.game_number == 1 or GlobalState.game_number % 10 == 0
         )
 
-        computed_advantages = self.compute_advantages(
+        advantages, returns = self.advantage_estimates(
             self.experiences.values, self.experiences.rewards, self.experiences.dones
         )
+
+        if self.options.normalise_advantages:
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std() + 1e-6
+            )
 
         kl_values = []
         entropy_values = []
@@ -85,50 +100,49 @@ class Agent:
         critic_losses = []
         total_losses = []
 
-        for _ in range(1):
-            for minibatch_indicies in self.experiences.minibatch_indicies(self.options.use_minibatches):
-                minibatch = self.experiences[minibatch_indicies]
-                states, actions, values, old_probs, *_ = map(
-                    partial(torch.tensor, dtype=torch.float32), minibatch
-                )
+        for _ in range(self.n_epochs):
+            states = torch.from_numpy(np.array(self.experiences.states)).float()
+            actions = torch.from_numpy(np.array(self.experiences.actions)).float()
+            probs = torch.tensor(np.array(self.experiences.probs)).float()
 
-                dist = self.actor(states)
-                critic_value = self.critic(states)
-                advantages = computed_advantages[minibatch_indicies]
-                if self.options.normalise_advantages:
-                    advantages = (advantages - advantages.mean()) / (
-                        advantages.std() + 1e-10
-                    )
+            for indicies in self.experiences.minibatch_indicies():
+                b_states = numpy_getitem(states, indicies, index=self.options.use_minibatches)
+                b_actions = numpy_getitem(actions, indicies, index=self.options.use_minibatches)
+                b_advantages = numpy_getitem(advantages, indicies, index=self.options.use_minibatches)
+                b_returns = numpy_getitem(returns, indicies, index=self.options.use_minibatches)
+                old_probs = numpy_getitem(probs, indicies, index=self.options.use_minibatches)
 
-                new_probs = dist.log_prob(actions)
+                combined_action = b_states.view(b_states.shape[0], -1)
+                # Critic values are the same for both agent
+                new_values = self.critic(combined_action).unsqueeze(1).repeat(1, 2)
+                dist = self.actor(b_states)
+
+                new_probs = dist.log_prob(b_actions)
                 probs_ratio = new_probs.exp() / old_probs.exp()
 
-                weighted_ratio = probs_ratio * advantages
+                weighted_ratio = probs_ratio * b_advantages
                 clipped_ratio = (
                     torch.clamp(probs_ratio, 1 - self.epsilon, 1 + self.epsilon)
                     * advantages
                 )
-                returns = advantages + values
 
                 entropy = dist.entropy().mean()
                 actor_loss = -torch.min(weighted_ratio, clipped_ratio).mean()
-                critic_loss = torch.nn.functional.mse_loss(returns, critic_value)
+                critic_loss = torch.nn.functional.mse_loss(new_values, b_returns)
 
-                # We add entropy rather than subtract it, because we want to
-                # maximise entropy
-                total_loss = actor_loss + self.c1 * critic_loss #- self.c2 * entropy
+                total_loss = actor_loss + self.c1 * critic_loss - self.c2 * entropy
                 self.actor.optimizer.zero_grad()
                 self.critic.optimizer.zero_grad()
                 total_loss.backward()
                 self.actor.optimizer.step()
                 self.critic.optimizer.step()
 
-            kl_values.append((old_probs - new_probs).mean())
-            entropy_values.append(entropy.item())
-            actor_losses.append(actor_loss.item())
-            critic_losses.append(critic_loss.item())
-            total_losses.append(total_loss.item())
-            self.total_epochs += 1
+                kl_values.append((old_probs - new_probs).mean())
+                entropy_values.append(entropy.item())
+                actor_losses.append(actor_loss.item())
+                critic_losses.append(critic_loss.item())
+                total_losses.append(total_loss.item())
+                self.total_epochs += 1
 
         if self.options.reset_experiences_each_train:
             self.experiences.reset()
@@ -139,35 +153,33 @@ class Agent:
         writer.add_scalar("Loss/Critic", mean(critic_losses), self.total_epochs)
         writer.add_scalar("Loss/Total", mean(total_losses), self.total_epochs)
 
-    def compute_advantages(
+    def advantage_estimates(
         self, values: list[Value], rewards: list[Reward], dones: list[Done]
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         gae = 0.0
         n_experiences = len(self.experiences)
         if self.multiple_agents:
             advantages = [0.0] * n_experiences
+            returns = [0.0] * n_experiences
         else:
             advantages = torch.empty(n_experiences, dtype=torch.float32)
 
-        with torch.no_grad():
-            for t in reversed(range(n_experiences)):
-                if t == n_experiences - 1:
-                    next_value = 0.0
-                else:
-                    next_value = values[t + 1] * (1 - dones[t])
-                delta = rewards[t] + self.gamma * next_value - values[t]
-                gae = delta + self.gamma * self.gae_lambda * gae
-                advantages[t] = gae
+        for t in reversed(range(n_experiences)):
+            if t == n_experiences - 1:
+                next_value = 0.0
+            else:
+                next_value = values[t + 1] * (1 - dones[t])
+            expected_return = rewards[t] + self.gamma * next_value
+            delta = expected_return - values[t]
+            gae = delta + self.gamma * self.gae_lambda * gae
+            advantages[t] = gae
+            returns[n_experiences - t - 1] = expected_return
 
         if self.multiple_agents:
-            return torch.stack(advantages).float()
-        return advantages
+            return torch.stack(advantages).float(), torch.stack(returns).float()
 
-    def evaluate(self, states, actions):
-        values = self.critic(states)
-        dist = self.actor(states)
-        log_probs = dist.log_prob(actions)
-        return values, log_probs
+        returns = advantages + values
+        return advantages, returns
 
     def reset(self):
         if self.options.reset_experiences_each_train:
