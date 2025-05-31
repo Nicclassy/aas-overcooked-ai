@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 from typing import cast as typing_cast
 
+import log
 import numpy as np
 import torch
 from overcooked_ai_py.mdp.overcooked_env import Overcooked
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedState
+from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, OvercookedState
 from tqdm import tqdm
 
 from src.agent import Agent
@@ -12,6 +13,7 @@ from src.batching import AgentExperience
 from src.misc import CHECKPOINTS_DIR
 from src.parameters import AlgorithmOptions
 from src.types_ import Observation, Reward
+from src.visualisation import visualise_game
 
 
 @dataclass
@@ -30,10 +32,11 @@ class RolloutResults:
                 for game_result in self.game_results
             )
         else:
-            return sum(
-                sum(game_result.rewards) / len(game_result.rewards)
-                for game_result in self.game_results
-            )
+            average = 0
+            for game_results in self.game_results:
+                average += sum(game_results.rewards)
+            average /= len(self.game_results)
+            return average
 
 
 class MultiAgentTrainer:
@@ -132,10 +135,12 @@ class SingleAgentTrainer:
     def __init__(
         self,
         env: Overcooked,
+        mdp: OvercookedGridworld,
         agent: Agent,
         options: AlgorithmOptions,
     ):
         self.env = env
+        self.mdp = mdp
         self.agent = agent
         self.options = options
 
@@ -148,9 +153,8 @@ class SingleAgentTrainer:
             observations = list(info["both_agent_obs"])
 
             states = []
-            rewards = []
+            game_rewards = []
             while True:
-                states.append(state)
                 observations = np.array(
                     [observation.astype(np.float32) for observation in observations]
                 )
@@ -161,11 +165,14 @@ class SingleAgentTrainer:
                 next_info, reward, done, env_info = self.env.step(actions.tolist())
                 shaped_rewards = env_info["shaped_r_by_agent"]
                 reward += torch.tensor(shaped_rewards)
-                rewards.append(typing_cast(torch.Tensor, reward).sum().item())
+                episode_reward = typing_cast(torch.Tensor, reward).sum().item()
 
                 self.agent.experiences.add(
                     AgentExperience(observations, actions, values, probs, reward, done)
                 )
+
+                states.append(state)
+                game_rewards.append(episode_reward)
 
                 if done:
                     break
@@ -176,7 +183,7 @@ class SingleAgentTrainer:
                 observations = next_observations
                 state = next_state
 
-            game_results.append(GameResults(rewards, states))
+            game_results.append(GameResults(game_rewards, states))
 
         return RolloutResults(game_results)
 
@@ -196,3 +203,7 @@ class SingleAgentTrainer:
                     {"average reward": results.average_reward()}
                 )
             current_episode += self.options.rollout_episodes
+
+        last_game = results.game_results[-1]
+        log("Last game:", log.styles.lolcat(last_game.rewards))
+        visualise_game(last_game.states, self.mdp)
