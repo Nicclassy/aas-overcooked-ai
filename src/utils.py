@@ -22,25 +22,41 @@ _DELETE_PREVIOUS_TENSORBOARD_RUNS = True
 _writers: dict[str, SummaryWriter] = {}
 _tensorboard_init = [False]
 
+_device: Optional[torch.device] = [None]
+
 
 def set_all_seeds(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+def best_available_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+def default_device() -> torch.device:
+    assert _device[0] is not None
+    return _device[0]
+
+def set_device(device: Optional[torch.device | str] = None):
+    assert _device[0] is None
+    if isinstance(device, str):
+        device = torch.device(device)
+    _device[0] = device or best_available_device()
 
 class NullWriter:
     def __getattr__(self, _: Any):
         def noop(*args: Any, **kwargs: Any):
             pass
-
         return noop
 
 
 class GlobalState:
+    game_number: ClassVar[int] = 1
     is_training: ClassVar[bool] = True
-    game_number: ClassVar[int] = 0
-    n_agents_created: ClassVar[int] = 0
 
     def __init__(self) -> Never:
         raise Exception(f"{self.__class__.__name__!r} is not instantiable")
@@ -48,7 +64,6 @@ class GlobalState:
 
 def summary_writer_factory(
     *,
-    agent_number: Optional[int] = None,
     game_number: Optional[int] = None,
     custom_name: Optional[str] = None,
     predicate: Optional[Callable[..., bool]] = None,
@@ -57,26 +72,19 @@ def summary_writer_factory(
     def writers_key() -> Optional[str]:
         if custom_name is not None:
             return custom_name
-        if agent_number is not None and game_number is not None:
-            return f"{agent_number}:{game_number}"
-        if agent_number is not None:
-            return str(agent_number)
+        if game_number is not None:
+            return f"{game_number}"
         return None
 
     if GlobalState.is_training or not write or (predicate is not None and not predicate()):
         return NullWriter()
 
-    if custom_name is not None:
-        assert agent_number is None and game_number is None
-    if game_number is not None:
-        assert agent_number is not None
-
-    if custom_name is not None:
+    if game_number is not None and custom_name is not None:
+        log_dir = RUNS_DIR / f"{custom_name} (Game {game_number})"
+    elif custom_name is not None:
         log_dir = RUNS_DIR / custom_name
-    elif agent_number is not None and game_number is not None:
-        log_dir = RUNS_DIR / f"Agent {agent_number} (Game {game_number})"
-    elif agent_number is not None:
-        log_dir = RUNS_DIR / f"Agent {agent_number}"
+    elif game_number is not None:
+        log_dir = RUNS_DIR / f"Game {game_number}"
     else:
         log_dir = RUNS_DIR
 

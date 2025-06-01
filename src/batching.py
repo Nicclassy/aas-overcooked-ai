@@ -27,7 +27,7 @@ _runtime_type_checked_experience = [False]
 
 
 @dataclass(slots=True, frozen=True)
-class AgentExperience(AttributeUnpackable):
+class RolloutExperience(AttributeUnpackable):
     state: State
     action: Action
     value: Value
@@ -46,15 +46,15 @@ class AgentExperience(AttributeUnpackable):
             _runtime_type_checked_experience[0] = True
 
 @final
-class AgentExperiences(AttributeIterable[list]):
-    def __init__(self, minibatch_size: int, size: int):
+class RolloutExperiences(AttributeIterable[list]):
+    def __init__(self, minibatch_size: int, capacity: int):
         self.minibatch_size = minibatch_size
-        self.states: list[StoredState] = [0] * size
-        self.actions: list[StoredAction] = [0] * size
-        self.values: list[StoredValue] = [0] * size
-        self.probs: list[StoredProbability] = [0] * size
-        self.rewards: list[StoredReward] = [0] * size
-        self.dones: list[StoredDone] = [0] * size
+        self.states: list[StoredState] = [0] * capacity
+        self.actions: list[StoredAction] = [0] * capacity
+        self.values: list[StoredValue] = [0] * capacity
+        self.probs: list[StoredProbability] = [0] * capacity
+        self.rewards: list[StoredReward] = [0] * capacity
+        self.dones: list[StoredDone] = [0] * capacity
         self.index = 0
 
     def __len__(self) -> int:
@@ -70,7 +70,7 @@ class AgentExperiences(AttributeIterable[list]):
             for i in batch_start
         )
 
-    def add(self, experience: AgentExperience):
+    def add(self, experience: RolloutExperience):
         self.states[self.index] = experience.state
         self.actions[self.index] = experience.action
         self.values[self.index] = experience.value
