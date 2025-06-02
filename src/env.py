@@ -9,7 +9,7 @@ import gymnasium as gym
 from overcooked_ai_py.mdp.overcooked_env import Overcooked, OvercookedEnv
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 
-from src.types_ import Action, Done, Observation, Reward
+from src.dtypes import Action, Done, Observation, Reward
 
 
 @runtime_checkable

@@ -4,8 +4,8 @@ from typing import cast as typing_cast
 import torch
 import torch.nn as nn
 
+from src.dtypes import State
 from src.parameters import Hyperparameters
-from src.types_ import State
 
 
 class ActorNetwork(nn.Module):
@@ -28,11 +28,10 @@ class ActorNetwork(nn.Module):
             lr=parameters.alpha
         )
 
-    def forward(self, state: State) -> torch.distributions.Distribution:
-        logits: torch.Tensor = self.net(state)
-        return torch.distributions.Categorical(logits=logits)
+    def forward(self, state: State) -> torch.Tensor:
+        return self.net(state)
 
-    __call__: Callable[[State], torch.distributions.Distribution]
+    __call__: Callable[[State], torch.Tensor]
 
 class CriticNetwork(nn.Module):
     def __init__(

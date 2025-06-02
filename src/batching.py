@@ -5,8 +5,7 @@ from typing import final
 import numpy as np
 from numpy.typing import NDArray
 
-from src.misc import AttributeIterable, AttributeUnpackable, assert_instance
-from src.types_ import (
+from src.dtypes import (
     Action,
     Done,
     Probability,
@@ -21,6 +20,7 @@ from src.types_ import (
     StoredValue,
     Value,
 )
+from src.misc import AttributeIterable, AttributeUnpackable, assert_instance
 
 _runtime_type_check_experience = False
 _runtime_type_checked_experience = [False]

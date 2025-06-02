@@ -14,7 +14,7 @@ Probability: TypeAlias = float
 Reward: TypeAlias = int
 Done: TypeAlias = bool
 
-# These typealiases are used for the 'stored' versions of the 
+# These typealiases are used for the 'stored' versions of the
 # above typealiases, that is, representing the type
 # after it has been converted by numpy upon creating a new array
 StoredState: TypeAlias = State
