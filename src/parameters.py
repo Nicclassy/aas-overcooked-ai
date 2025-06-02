@@ -23,13 +23,13 @@ class Hyperparameters:
 
 
 @dataclass
-class AlgorithmOptions:
+class Options:
     rollout_episodes: int = 10
     learn_episodes: int = 12
     total_episodes: int = 1000
     horizon: int = 400
-    use_tqdm: bool = False
+    use_tqdm: bool = True
     use_minibatches: bool = False
+    use_training_shaped_rewards: bool = True
     normalise_advantages: bool = True
     reset_epochs_after_game: bool = True
-    reset_experiences_each_train: bool = True

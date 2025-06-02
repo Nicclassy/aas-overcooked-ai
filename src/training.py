@@ -1,196 +1,175 @@
-from dataclasses import dataclass
+import itertools
+from dataclasses import dataclass, field
+from typing import Any, Optional
 from typing import cast as typing_cast
 
-import log
 import numpy as np
 import torch
-from overcooked_ai_py.mdp.overcooked_env import Overcooked
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld, OvercookedState
+from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 from tqdm import tqdm
 
 from src.agent import Agent
-from src.batching import AgentExperience
-from src.misc import CHECKPOINTS_DIR
-from src.parameters import AlgorithmOptions
-from src.types_ import Observation, Reward
-from src.visualisation import visualise_game
+from src.batching import RolloutExperience
+from src.dtypes import ObservationValue, Reward
+from src.env import Overcookable, WrappedOvercookedEnv
+from src.misc import iter_factory, timed
+from src.parameters import Options
 
 
-@dataclass
-class GameResults:
-    rewards: tuple[list[Reward], list[Reward]] | list[Reward]
-    states: list[OvercookedState]
+@dataclass(slots=True, frozen=True)
+class OvercookedGame:
+    rewards: list[Reward]
+    overcooked_states: list[OvercookedState]
+    hud_datas: list[dict[str, Any]] = field(default_factory=list)
+    env: Optional[Overcookable] = None
+
+    @property
+    def base_mdp(self) -> Optional[OvercookedGridworld]:
+        if isinstance(self.env, WrappedOvercookedEnv):
+            return self.env.base_mdp
+        else:
+            return None
+
+    def soups_made(self) -> int:
+        return sum(reward // 20 for reward in self.rewards)
+
+    def total_reward(self) -> int:
+        return sum(self.rewards)
+
+    def visualise(
+        self,
+        *,
+        fps: int = 10,
+        wait_after_last_frame: bool = True
+    ):
+        import pygame
+
+        pygame.init()
+        pygame.display.init()
+
+        update_interval = 1000 // fps
+        update_event = pygame.USEREVENT + 1
+
+        base_mdp = self.base_mdp
+        assert base_mdp is not None
+
+        visualizer = StateVisualizer()
+        hud_datas = self.hud_datas or itertools.repeat(None)
+        next_rendered_state = iter_factory(
+            visualizer.render_state(
+                state,
+                grid=base_mdp.terrain_mtx,
+                hud_data=hud_data
+            )
+            for state, hud_data in zip(self.overcooked_states, hud_datas)
+        )
+
+        rendered_state = next_rendered_state()
+        screen = pygame.display.set_mode(
+            rendered_state.get_size(), flags=pygame.HWSURFACE | pygame.DOUBLEBUF
+        )
+        pygame.event.set_allowed([pygame.QUIT, update_event])
+        screen.blit(rendered_state, (0, 0))
+        pygame.display.flip()
+
+        pygame.time.set_timer(update_event, update_interval)
+        pygame.display.set_caption("Overcooked-AI")
+
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                    pygame.quit()
+                elif event.type == update_event:
+                    if (rendered_state := next_rendered_state()) is not None:
+                        screen.blit(rendered_state, (0, 0))
+                        pygame.display.flip()
+                    elif not wait_after_last_frame:
+                        running = False
+
 
 @dataclass
 class RolloutResults:
-    game_results: list[GameResults]
+    games: list[OvercookedGame]
 
-    def average_reward(self, agent_number: int = 1) -> int:
-        if isinstance(self.game_results[0], tuple):
-            return sum(
-                sum(game_result.rewards[agent_number - 1]) / len(game_result.rewards[agent_number])
-                for game_result in self.game_results
-            )
-        else:
-            average = 0
-            for game_results in self.game_results:
-                average += sum(game_results.rewards)
-            average /= len(self.game_results)
+    def average_reward(self) -> int | float:
+        average = 0
+        for overcooked_game in self.games:
+            average += overcooked_game.total_reward()
+
+        if average == 0:
             return average
 
+        average /= len(self.games)
+        return average
 
-class MultiAgentTrainer:
+
+class AgentTrainer:
     def __init__(
         self,
-        env: Overcooked,
-        agent1: Agent,
-        agent2: Agent,
-        options: AlgorithmOptions
-    ):
-        self.env = env
-        self.options = options
-        self.n_agents = 2
-        self.agents = (agent1, agent2)
-
-    def train_agents(self):
-        current_episode = 0
-        progress_bar = tqdm(total=self.options.total_episodes, desc="PPO Training", unit="step")
-        while current_episode < self.options.total_episodes:
-            results = self.rollout()
-            for agent in self.agents:
-                agent.learn()
-                agent.reset()
-
-            progress_bar.update(self.options.rollout_episodes)
-            progress_bar.set_postfix(
-                {"average reward (agent 1)": results.average_reward(agent_number=1)}
-            )
-            current_episode += self.options.rollout_episodes
-
-    def rollout(self) -> RolloutResults:
-        game_results: list[GameResults] = []
-
-        for _ in range(self.options.rollout_episodes):
-            info = self.env.reset()
-            state = info["overcooked_state"]
-            observations = list(info["both_agent_obs"])
-
-            states = []
-            rewards = ([], [])
-            while True:
-                states.append(state)
-                actions = [None for _ in range(self.n_agents)]
-
-                for i, observation in enumerate(observations):
-                    observation: Observation = observation.astype(np.float32)
-                    observations[i] = observation
-                    with torch.no_grad():
-                        actions[i], *_ = action, prob, value = self.agents[i].choose_action(
-                            observation
-                        )
-
-                next_info, reward, done, env_info = self.env.step(actions)
-                shaped_rewards = env_info["shaped_r_by_agent"]
-
-                for i, observation in enumerate(observations):
-                    individual_reward = reward + shaped_rewards[i]
-                    experience = AgentExperience(
-                        observation, action, value, prob, individual_reward, done
-                    )
-                    self.agents[i].experiences.add(experience)
-                    rewards[i].append(individual_reward)
-
-                if done:
-                    break
-
-                next_observations = list(next_info["both_agent_obs"])
-                next_state = next_info["overcooked_state"]
-
-                observations = next_observations
-                state = next_state
-
-            game_results.append(GameResults(rewards, states))
-
-        return RolloutResults(game_results)
-
-    def save_agents(self):
-        if not CHECKPOINTS_DIR.exists():
-            CHECKPOINTS_DIR.mkdir()
-
-        for i, agent in enumerate(self.agents, start=1):
-            actor_save_path = CHECKPOINTS_DIR.joinpath(f"actor{i}.pth")
-            critic_save_path = CHECKPOINTS_DIR.joinpath(f"critic{i}.pth")
-            torch.save(agent.actor.state_dict(), actor_save_path)
-            torch.save(agent.critic.state_dict(), critic_save_path)
-
-    def load_agents(self):
-        for i, agent in enumerate(self.agents, start=1):
-            actor_save_path = CHECKPOINTS_DIR.joinpath(f"actor{i}.pth")
-            critic_save_path = CHECKPOINTS_DIR.joinpath(f"critic{i}.pth")
-            agent.actor.load_state_dict(torch.load(actor_save_path))
-            agent.critic.load_state_dict(torch.load(critic_save_path))
-
-
-class SingleAgentTrainer:
-    def __init__(
-        self,
-        env: Overcooked,
-        mdp: OvercookedGridworld,
+        env: Overcookable,
         agent: Agent,
-        options: AlgorithmOptions,
+        options: Options,
     ):
         self.env = env
-        self.mdp = mdp
         self.agent = agent
         self.options = options
 
     def rollout(self) -> RolloutResults:
-        game_results: list[GameResults] = []
+        games: list[OvercookedGame] = []
 
         for _ in range(self.options.rollout_episodes):
             info = self.env.reset()
-            state = info["overcooked_state"]
-            observations = list(info["both_agent_obs"])
+            overcooked_state = info["overcooked_state"]
+            observations = info["both_agent_obs"]
 
-            states = []
-            game_rewards = []
-            while True:
+            overcooked_states = []
+            rewards = []
+            done = False
+            while not done:
                 observations = np.array(
-                    [observation.astype(np.float32) for observation in observations]
+                    [observation.astype(ObservationValue) for observation in observations]
                 )
 
                 with torch.no_grad():
-                    actions, probs, values = self.agent.choose_actions(np.array(observations))
+                    actions, probs, value = self.agent.choose_actions(np.array(observations))
 
                 next_info, reward, done, env_info = self.env.step(actions.tolist())
-                shaped_rewards = env_info["shaped_r_by_agent"]
+                if self.options.use_training_shaped_rewards:
+                    shaped_rewards = env_info["shaped_r_by_agent"]
+                else:
+                    shaped_rewards = [0, 0]
                 reward += torch.tensor(shaped_rewards)
                 episode_reward = typing_cast(torch.Tensor, reward).sum().item()
 
                 self.agent.experiences.add(
-                    AgentExperience(observations, actions, values, probs, reward, done)
+                    RolloutExperience(observations, actions, value, probs, reward, done)
                 )
 
-                states.append(state)
-                game_rewards.append(episode_reward)
+                overcooked_states.append(overcooked_state)
+                rewards.append(episode_reward)
 
-                if done:
-                    break
-
-                next_observations = list(next_info["both_agent_obs"])
+                next_observations = next_info["both_agent_obs"]
                 next_state = next_info["overcooked_state"]
 
                 observations = next_observations
-                state = next_state
+                overcooked_state = next_state
 
-            game_results.append(GameResults(game_rewards, states))
+            games.append(OvercookedGame(rewards, overcooked_states))
 
-        return RolloutResults(game_results)
+        return RolloutResults(games)
 
+    @timed
     def train_agent(self):
         current_episode = 0
         if self.options.use_tqdm:
-            progress_bar = tqdm(total=self.options.total_episodes, desc="PPO Training", unit="step")
+            progress_bar = tqdm(
+                total=self.options.total_episodes,
+                desc="PPO Training",
+                unit="step"
+            )
 
         while current_episode < self.options.total_episodes:
             results = self.rollout()
@@ -203,7 +182,3 @@ class SingleAgentTrainer:
                     {"average reward": results.average_reward()}
                 )
             current_episode += self.options.rollout_episodes
-
-        last_game = results.game_results[-1]
-        log("Last game:", log.styles.lolcat(last_game.rewards))
-        visualise_game(last_game.states, self.mdp)
