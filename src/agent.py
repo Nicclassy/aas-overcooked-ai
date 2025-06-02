@@ -1,23 +1,23 @@
-from typing import final
+from typing import Any, final
 
 import numpy as np
 import torch
 from numpy.typing import NDArray
 
 from src.batching import RolloutExperiences
-from src.misc import flatten_dim, numpy_getitem
-from src.networks import ActorNetwork, CriticNetwork
-from src.parameters import Hyperparameters, Options
-from src.types_ import (
+from src.dtypes import (
     Action,
-    Done,
     Observation,
-    Probability,
-    Reward,
     StoredAction,
+    StoredDone,
     StoredProbability,
+    StoredReward,
+    StoredValue,
     Value,
 )
+from src.misc import CHECKPOINTS_DIR, flatten_dim, numpy_getitem
+from src.networks import ActorNetwork, CriticNetwork
+from src.parameters import Hyperparameters, Options
 from src.utils import GlobalState, summary_writer_factory
 
 
@@ -51,28 +51,24 @@ class Agent:
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
         self.critic = CriticNetwork(input_dim * 2, parameters)
 
-    def choose_action(
-        self, observation: Observation
-    ) -> tuple[Action, Probability, Value]:
-        state = torch.from_numpy(observation)
-        dist = self.actor(state)
-        value = self.critic(state)
-        action = dist.sample()
-        prob = dist.log_prob(action)
-        return action.item(), prob.item(), value.item()
-
     def choose_actions(
         self, observations: Observation
     ) -> tuple[NDArray[StoredAction], NDArray[StoredProbability], Value]:
         states = torch.from_numpy(observations)
-        dist = self.actor(states)
+        logits = self.actor(states)
+        dist = torch.distributions.Categorical(logits=logits)
         value = self.critic(states.view(-1))
         actions = dist.sample()
         probs = dist.log_prob(actions)
         return actions.numpy(), probs.numpy(), value.item()
 
+    def choose_best_actions(self, observations: Observation) -> list[Action]:
+        states = torch.from_numpy(observations)
+        logits = self.actor(states)
+        return torch.argmax(logits, dim=-1).tolist()
+
     def learn(self):
-        def mean(values: list) -> torch.Tensor:
+        def mean(values: list[Any]) -> torch.Tensor:
             return torch.tensor(values).mean()
 
         writer = summary_writer_factory(
@@ -98,7 +94,7 @@ class Agent:
         for _ in range(self.n_epochs):
             states = torch.from_numpy(np.array(self.experiences.states)).float()
             actions = torch.from_numpy(np.array(self.experiences.actions)).float()
-            probs = torch.tensor(np.array(self.experiences.probs)).float()
+            probs = torch.from_numpy(np.array(self.experiences.probs)).float()
 
             for indicies in self.experiences.minibatch_indicies():
                 b_states = numpy_getitem(states, indicies, index=self.options.use_minibatches)
@@ -110,7 +106,8 @@ class Agent:
                 combined_action = b_states.view(b_states.shape[0], -1)
                 # Critic values are the same for both agent
                 new_values = self.critic(combined_action).unsqueeze(1).repeat(1, 2)
-                dist = self.actor(b_states)
+                logits = self.actor(b_states)
+                dist = torch.distributions.Categorical(logits=logits)
 
                 new_probs = dist.log_prob(b_actions)
                 probs_ratio = new_probs.exp() / old_probs.exp()
@@ -146,19 +143,24 @@ class Agent:
         writer.add_scalar("Loss/Total", mean(total_losses), self.total_epochs)
 
     def advantage_estimates(
-        self, values: list[Value], rewards: list[Reward], dones: list[Done]
+        self,
+        values: list[StoredValue],
+        rewards: list[StoredReward],
+        dones: list[StoredDone]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         gae = 0.0
         n_experiences = len(self.experiences)
         advantages = [0.0] * n_experiences
         returns = [0.0] * n_experiences
 
-        for t in reversed(range(n_experiences)):
+        for t in range(n_experiences - 1, -1, -1):
             if t == n_experiences - 1:
                 next_value = 0.0
+                next_nonterminal = 0.0
             else:
-                next_value = values[t + 1] * (1 - dones[t])
-            expected_return = rewards[t] + self.gamma * next_value
+                next_value = values[t + 1]
+                next_nonterminal = 1 - dones[t]
+            expected_return = rewards[t] + self.gamma * next_value * next_nonterminal
             delta = expected_return - values[t]
             gae = delta + self.gamma * self.gae_lambda * gae
             advantages[t] = gae
@@ -170,3 +172,21 @@ class Agent:
         self.experiences.reset()
         if self.options.reset_epochs_after_game:
             self.total_epochs = 0
+
+    def save(self):
+        if not CHECKPOINTS_DIR.exists():
+            CHECKPOINTS_DIR.mkdir()
+
+        actor_save_path = CHECKPOINTS_DIR.joinpath("actor.pth")
+        critic_save_path = CHECKPOINTS_DIR.joinpath("critic.pth")
+        torch.save(self.actor.state_dict(), actor_save_path)
+        torch.save(self.critic.state_dict(), critic_save_path)
+
+    def load(self):
+        actor_save_path = CHECKPOINTS_DIR.joinpath("actor.pth")
+        critic_save_path = CHECKPOINTS_DIR.joinpath("critic.pth")
+        if not actor_save_path.exists() or not critic_save_path.exists():
+            raise FileNotFoundError(f"One or both of {actor_save_path} and {critic_save_path} was/were not found")
+
+        self.actor.load_state_dict(torch.load(actor_save_path))
+        self.critic.load_state_dict(torch.load(critic_save_path))
