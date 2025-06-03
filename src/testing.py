@@ -1,17 +1,17 @@
 import numpy as np
+import torch
 
 from src.agent import Agent
 from src.dtypes import ObservationValue
 from src.env import Overcookable
-from src.parameters import Options
 from src.training import OvercookedGame
 
 
 class AgentTester:
-    def __init__(self, env: Overcookable, agent: Agent, options: Options):
+    def __init__(self, env: Overcookable, agent: Agent):
         self.env = env
         self.agent = agent
-        self.options = options
+        self.options = agent.options
 
     def play_game(self) -> OvercookedGame:
         info = self.env.reset()
@@ -26,20 +26,21 @@ class AgentTester:
         episode = 1
         done = False
         while not done:
+            observations = np.array(
+                [observation.astype(ObservationValue) for observation in observations]
+            )
+
+            with torch.no_grad():
+                actions, *_ = self.agent.choose_actions(observations)
+            next_info, reward, done, _ = self.env.step(actions)
+
+            overcooked_states.append(overcooked_state)
+            rewards.append(reward)
             hud_datas.append({
                 "episode": episode,
                 "score": game.total_reward(),
                 "soups": game.soups_made()
             })
-            observations = np.array(
-                [observation.astype(ObservationValue) for observation in observations]
-            )
-
-            actions = self.agent.choose_best_actions(observations)
-            next_info, reward, done, _ = self.env.step(actions)
-
-            overcooked_states.append(overcooked_state)
-            rewards.append(reward)
             episode += 1
 
             next_observations = next_info["both_agent_obs"]
