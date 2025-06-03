@@ -1,6 +1,6 @@
 import random
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Optional, Protocol, final, overload, runtime_checkable
 from typing import cast as typing_cast
@@ -9,7 +9,7 @@ import gymnasium as gym
 from overcooked_ai_py.mdp.overcooked_env import Overcooked, OvercookedEnv
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 
-from src.dtypes import Action, Done, Observation, Reward
+from src.dtypes import Action, Done, LayoutName, Observation, Reward
 
 
 @runtime_checkable
@@ -23,14 +23,14 @@ class Overcookable(Protocol):
 
     This is necessary for standardisation and for (explicitly) following
     the type signatures in line with Overcooked-AI's way (rather than OpenAI's),
-    while providing slightly more specificity and ommitting unneeded features
+    while providing slightly more specificity and ommitting unneeded features.
     """
     action_space: gym.spaces.Space[Action]
     observation_space: gym.spaces.Space[Observation]
 
     @abstractmethod
     def step(
-        self, action: Action | list[Action]
+        self, actions: list[Action]
     ) -> tuple[dict[str, Any], Reward, Done, dict[str, Any]]:
         ...
 
@@ -60,26 +60,35 @@ class WrappedOvercookedEnv(Overcookable):
         return self.env.observation_space
 
     def step(
-        self, action: Action | list[Action]
+        self, actions: list[Action]
     ) -> tuple[dict[str, Any], Reward, Done, dict[str, Any]]:
-        return self.env.step(action)
+        return self.env.step(actions)
 
     def reset(self) -> dict[str, Any]:
         return self.env.reset()
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True)
 class OvercookedEnvFactory:
     """Greatly simplifies the creation of environments"""
-    old_dynamics: bool = True
-    info_level: int = 0
-    horizon: int = 400
+    layout_name: Optional[LayoutName] = None
+    old_dynamics: bool = field(default=True, kw_only=True)
+    info_level: int = field(default=0, kw_only=True)
+    horizon: int = field(default=400, kw_only=True)
 
-    def create_env(self, layout_name: str) -> WrappedOvercookedEnv:
+    def create_env(self, layout_name: Optional[LayoutName] = None) -> WrappedOvercookedEnv:
+        layout_name = layout_name or self.layout_name
+        assert layout_name is not None, "A layout name must be provided"
+
         base_mdp = OvercookedGridworld.from_layout_name(layout_name, old_dynamics=self.old_dynamics)
         base_env = OvercookedEnv.from_mdp(base_mdp, info_level=0, horizon=self.horizon)
         env = Overcooked(base_env=base_env, featurize_fn=base_env.featurize_state_mdp)
         return WrappedOvercookedEnv(base_mdp, base_env, env)
+
+    def create_envs(self, *layout_names: LayoutName) -> list[WrappedOvercookedEnv]:
+        return list(map(self.create_env, layout_names))
+
+    __call__ = create_envs
 
 
 @final
@@ -87,7 +96,7 @@ class MultipleOvercookedEnv(Overcookable):
     @overload
     def __init__(
         self,
-        *layout_names: str,
+        *layout_names: LayoutName,
         **kwargs: Any
     ):
         ...
@@ -102,7 +111,7 @@ class MultipleOvercookedEnv(Overcookable):
 
     def __init__(
         self,
-        *args: str | Overcookable,
+        *args: LayoutName | Overcookable,
         factory: Optional[OvercookedEnvFactory] = None,
         switch_env_interval: int = 1,
         allow_same_env_twice: bool = False
@@ -115,13 +124,14 @@ class MultipleOvercookedEnv(Overcookable):
         assert all(type(arg) is expected_type for arg in args_it), \
             f"Expected a homogeneous argument type ({expected_type.__name__!r})"
 
-        if isinstance(args[0], str):
+        if isinstance(args[0], Overcookable):
+            self.envs = typing_cast(list[Overcookable], args)
+        else:
             factory = factory or OvercookedEnvFactory()
             self.envs = list(map(factory.create_env, args))
-        else:
-            self.envs = typing_cast(list[Overcookable], args)
 
         self.env = self.envs[0]
+        self.n_envs = len(self.envs)
         self.previous_index = len(self.envs)
         self.n_resets = 0
         self.reset_env_interval = switch_env_interval
@@ -136,15 +146,19 @@ class MultipleOvercookedEnv(Overcookable):
         return self.env.observation_space
 
     def step(
-        self, action: Action | list[Action]
+        self, actions: list[Action]
     ) -> tuple[dict[str, Any], Reward, Done, dict[str, Any]]:
-        return self.env.step(action)
+        return self.env.step(actions)
 
     def reset(self) -> dict[str, Any]:
         randomise_env_index = partial(random.randint, 0, self.n_envs - 1)
-        index = randomise_env_index()
-        while not self.allow_same_env_twice and index != self.previous_index:
+        if self.n_envs > 2:
             index = randomise_env_index()
+            if not self.allow_same_env_twice:
+                while index == self.previous_index:
+                    index = randomise_env_index()
+        else:
+            index = (self.previous_index + 1) % self.n_envs
         self.previous_index = index
         self.env = self.envs[index]
         return self.env.reset()

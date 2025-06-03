@@ -1,7 +1,15 @@
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
+
+LayoutName: TypeAlias = Literal[
+    "cramped_room",
+    "coordination_ring",
+    "forced_coordination",
+    "counter_circuit_o_1order",
+    "asymmetric_advantages"
+]
 
 ObservationValue: TypeAlias = np.float32
 StateValue: TypeAlias = np.float32
