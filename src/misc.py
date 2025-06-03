@@ -2,6 +2,7 @@ import functools
 import time
 import types
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import asdict, fields, is_dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Generic, Optional, TypeAlias, TypeVar, overload
@@ -28,6 +29,7 @@ _TIME_MEASUREMENTS = [("hour", 3600), ("minute", 60), ("second", 1)]
 
 def flatten_dim(dim: int | tuple[int]) -> int:
     return dim[0] if isinstance(dim, tuple) else dim
+
 
 def numpy_getitem(collection: T, indicies: NDArray[np.int32], *, index: bool) -> T:
     return collection[indicies] if index else collection
@@ -99,14 +101,17 @@ def format_time(seconds: float, include_milliseconds: bool) -> str:
 
     return andjoin(parts) if parts else "<1 second"
 
+
 @overload
 def timed(obj: _ParamSpecCallable, /) -> _ParamSpecCallable: ...
+
 
 @overload
 def timed(
     *,
     include_milliseconds: bool = False
 ) -> Callable[[_ParamSpecCallable], _ParamSpecCallable]: ...
+
 
 def timed(obj: _ParamSpecCallable | object = _NO_ARG_PROVIDED, /, *, include_milliseconds: bool = False):
     def decorator(func: _ParamSpecCallable):
@@ -126,6 +131,61 @@ def timed(obj: _ParamSpecCallable | object = _NO_ARG_PROVIDED, /, *, include_mil
     return decorator(obj)
 
 
+def dataclass_fieldnames(cls: type) -> list[str]:
+    assert is_dataclass(cls), "This decorator only supports dataclasses"
+    return [field.name for field in fields(cls)]
+
+
+def filter_attributes_only(values: dict[str, Any], cls: type):
+    assert is_dataclass(cls), "This decorator only supports dataclasses"
+    fieldnames = set(dataclass_fieldnames(cls))
+    return {
+        key: value
+        for key, value in values.items()
+        if key in fieldnames
+    }
+
+
+def convert_to_cmd_args(obj: Any) -> list[str]:
+    args = []
+    for key, value in vars(obj).items():
+        if value is not None:
+            args.append(f"--{key}")
+            args.append(repr(value))
+    return args
+
+
+def non_destructive_mutation(cls: type[T]) -> type[T]:
+    assert is_dataclass(cls), "This decorator only supports dataclasses"
+
+    def with_values(self: T, **replacements: Any) -> T:
+        values = asdict(self)
+        for name, value in replacements.items():
+            if name not in values:
+                raise ValueError(f"Unknown attribute {name!r}")
+            values[name] = value
+        return cls(**values)
+
+    cls.with_values = with_values
+    return cls
+
+
+class NonDestructiveMutation:
+    # Let's help the typechecker here with this 'mixin' to support the decorator
+    def with_values(self, **values: Any) -> Self:
+        raise NotImplementedError
+
+
+class CountedInstanceCreation:
+    def __init__(self):
+        self.n_accesses = 0
+
+    def __get__(self, *_) -> int:
+        n_accesses = self.n_accesses
+        self.n_accesses += 1
+        return n_accesses
+
+
 class AttributeIterable(Generic[T]):
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
         self = super().__new__(cls)
@@ -140,9 +200,9 @@ class AttributeIterable(Generic[T]):
         # at runtime, that is, for AttributeIterable[list], finding
         # the actual 'list' type object
         assert hasattr(self, "__dict__")
-        assert isinstance(generic_arg, type)
         # This should be the case anyway
         assert hasattr(generic_arg, "__instancecheck__")
+        assert isinstance(generic_arg, type)
         self._T = generic_arg
         return self
 

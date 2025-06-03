@@ -6,44 +6,25 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.dtypes import (
-    Action,
-    Done,
-    Probability,
-    Reward,
-    State,
-    StateValue,
     StoredAction,
     StoredDone,
     StoredProbability,
     StoredReward,
     StoredState,
     StoredValue,
-    Value,
 )
-from src.misc import AttributeIterable, AttributeUnpackable, assert_instance
-
-_runtime_type_check_experience = False
-_runtime_type_checked_experience = [False]
+from src.misc import AttributeIterable, AttributeUnpackable
 
 
 @dataclass(slots=True, frozen=True)
 class RolloutExperience(AttributeUnpackable):
-    state: State
-    action: Action
-    value: Value
-    prob: Probability
-    reward: Reward
-    done: Done
+    state: StoredState
+    action: StoredAction
+    value: StoredValue
+    prob: StoredProbability
+    reward: StoredReward
+    done: StoredDone
 
-    def __post_init__(self):
-        if _runtime_type_check_experience and not _runtime_type_checked_experience[0]:
-            assert_instance(self.state, StateValue)
-            assert_instance(self.action, Action)
-            assert_instance(self.value, Value)
-            assert_instance(self.prob, Probability)
-            assert_instance(self.reward, Reward)
-            assert_instance(self.done, Done)
-            _runtime_type_checked_experience[0] = True
 
 @final
 class RolloutExperiences(AttributeIterable[list]):

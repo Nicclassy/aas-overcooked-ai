@@ -1,4 +1,5 @@
-from typing import Any, final
+from functools import partial
+from typing import Optional, final, overload
 
 import numpy as np
 import torch
@@ -15,24 +16,51 @@ from src.dtypes import (
     StoredValue,
     Value,
 )
+from src.env import Overcookable
 from src.misc import CHECKPOINTS_DIR, flatten_dim, numpy_getitem
 from src.networks import ActorNetwork, CriticNetwork
 from src.parameters import Hyperparameters, Options
-from src.utils import GlobalState, summary_writer_factory
+from src.utils import WriterFactory, create_writer, tensor_mean
 
 
 @final
 class Agent:
+    @overload
     def __init__(
         self,
-        n_actions: int,
-        input_dim: int | tuple[int],
         parameters: Hyperparameters,
-        options: Options
+        options: Options,
+        *,
+        env: Optional[Overcookable] = None
     ):
+        ...
+
+    @overload
+    def __init__(
+        self,
+        parameters: Hyperparameters,
+        options: Options,
+        *,
+        n_actions: Optional[int] = None,
+        input_dim: Optional[int | tuple[int]] = None
+    ):
+        ...
+
+    def __init__(
+        self,
+        parameters: Hyperparameters,
+        options: Options,
+        *,
+        env: Optional[Overcookable] = None,
+        n_actions: Optional[int] = None,
+        input_dim: Optional[int | tuple[int]] = None,
+        writer_factory: Optional[WriterFactory] = None
+    ):
+        assert env or (n_actions is not None and input_dim is not None), \
+            "An environmnent or dimensions must be provided"
         self.experiences = RolloutExperiences(
             parameters.minibatch_size,
-            capacity=options.horizon * options.rollout_episodes
+            capacity=options.horizon * options.rollout_episodes,
         )
         self.options = options
         self.gamma = parameters.gamma
@@ -42,12 +70,16 @@ class Agent:
         self.c1 = parameters.critic_coefficient
         self.c2 = parameters.entropy_coefficient
         self.total_epochs = 0
+        self.writer_factory = writer_factory or partial(create_writer, write=False)
 
-        input_dim = flatten_dim(input_dim)
-        assert input_dim >= parameters.actor_fc1_dim, \
+        input_dim = flatten_dim(input_dim or env.observation_space.shape)
+        n_actions = n_actions or env.action_space.n
+        assert input_dim >= parameters.actor_fc1_dim, (
             f"Input dim {input_dim} should be larger than layer 1 dim {parameters.actor_fc1_dim}"
-        assert input_dim >= parameters.critic_fc1_dim, \
+        )
+        assert input_dim >= parameters.critic_fc1_dim, (
             f"Input dim {input_dim} should be larger than layer 1 dim {parameters.critic_fc1_dim}"
+        )
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
         self.critic = CriticNetwork(input_dim * 2, parameters)
 
@@ -68,22 +100,14 @@ class Agent:
         return torch.argmax(logits, dim=-1).tolist()
 
     def learn(self):
-        def mean(values: list[Any]) -> torch.Tensor:
-            return torch.tensor(values).mean()
-
-        writer = summary_writer_factory(
-            game_number=GlobalState.game_number,
-            predicate=lambda: GlobalState.game_number == 1 or GlobalState.game_number % 10 == 0
-        )
+        writer = self.writer_factory()
 
         advantages, returns = self.advantage_estimates(
             self.experiences.values, self.experiences.rewards, self.experiences.dones
         )
 
         if self.options.normalise_advantages:
-            advantages = (advantages - advantages.mean()) / (
-                advantages.std() + 1e-8
-            )
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         kl_values = []
         entropy_values = []
@@ -96,15 +120,25 @@ class Agent:
             actions = torch.from_numpy(np.array(self.experiences.actions)).float()
             probs = torch.from_numpy(np.array(self.experiences.probs)).float()
 
-            for indicies in self.experiences.minibatch_indicies():
-                b_states = numpy_getitem(states, indicies, index=self.options.use_minibatches)
-                b_actions = numpy_getitem(actions, indicies, index=self.options.use_minibatches)
-                b_advantages = numpy_getitem(advantages, indicies, index=self.options.use_minibatches)
-                b_returns = numpy_getitem(returns, indicies, index=self.options.use_minibatches)
-                old_probs = numpy_getitem(probs, indicies, index=self.options.use_minibatches)
+            for b_indicies in self.experiences.minibatch_indicies():
+                b_states = numpy_getitem(
+                    states, b_indicies, index=self.options.use_minibatches
+                )
+                b_actions = numpy_getitem(
+                    actions, b_indicies, index=self.options.use_minibatches
+                )
+                b_advantages = numpy_getitem(
+                    advantages, b_indicies, index=self.options.use_minibatches
+                )
+                b_returns = numpy_getitem(
+                    returns, b_indicies, index=self.options.use_minibatches
+                )
+                old_probs = numpy_getitem(
+                    probs, b_indicies, index=self.options.use_minibatches
+                )
 
                 combined_action = b_states.view(b_states.shape[0], -1)
-                # Critic values are the same for both agent
+                # Critic values are the same for both agent (hence the repeat)
                 new_values = self.critic(combined_action).unsqueeze(1).repeat(1, 2)
                 logits = self.actor(b_states)
                 dist = torch.distributions.Categorical(logits=logits)
@@ -112,14 +146,14 @@ class Agent:
                 new_probs = dist.log_prob(b_actions)
                 probs_ratio = new_probs.exp() / old_probs.exp()
 
-                weighted_ratio = probs_ratio * b_advantages
+                unclipped_ratio = probs_ratio * b_advantages
                 clipped_ratio = (
                     torch.clamp(probs_ratio, 1 - self.epsilon, 1 + self.epsilon)
                     * advantages
                 )
 
                 entropy = dist.entropy().mean()
-                actor_loss = -torch.min(weighted_ratio, clipped_ratio).mean()
+                actor_loss = -torch.min(unclipped_ratio, clipped_ratio).mean()
                 critic_loss = torch.nn.functional.mse_loss(new_values, b_returns)
 
                 total_loss = actor_loss + self.c1 * critic_loss - self.c2 * entropy
@@ -136,11 +170,37 @@ class Agent:
                 total_losses.append(total_loss.item())
                 self.total_epochs += 1
 
-        writer.add_scalar("Policy/KL", mean(kl_values), self.total_epochs)
-        writer.add_scalar("Policy/Entropy", mean(entropy_values), self.total_epochs)
-        writer.add_scalar("Loss/Actor", mean(actor_losses), self.total_epochs)
-        writer.add_scalar("Loss/Critic", mean(critic_losses), self.total_epochs)
-        writer.add_scalar("Loss/Total", mean(total_losses), self.total_epochs)
+        rewards = torch.from_numpy(np.array(self.experiences.rewards)).float()
+        writer.add_scalar(
+            "Policy/Reward",
+            tensor_mean(rewards) * self.options.horizon,
+            self.total_epochs
+        )
+        writer.add_scalar(
+            "Policy/KL",
+            tensor_mean(kl_values),
+            self.total_epochs
+        )
+        writer.add_scalar(
+            "Policy/Entropy",
+            tensor_mean(entropy_values),
+            self.total_epochs
+        )
+        writer.add_scalar(
+            "Loss/Actor",
+            tensor_mean(actor_losses),
+            self.total_epochs
+        )
+        writer.add_scalar(
+            "Loss/Critic",
+            tensor_mean(critic_losses),
+            self.total_epochs
+        )
+        writer.add_scalar(
+            "Loss/Total",
+            tensor_mean(total_losses),
+            self.total_epochs
+        )
 
     def advantage_estimates(
         self,
@@ -166,7 +226,10 @@ class Agent:
             advantages[t] = gae
             returns[n_experiences - t - 1] = expected_return
 
-        return torch.stack(advantages).float(), torch.stack(returns).float()
+        return (
+            torch.stack(advantages).float(),
+            torch.stack(returns).float()
+        )
 
     def reset(self):
         self.experiences.reset()
@@ -174,19 +237,29 @@ class Agent:
             self.total_epochs = 0
 
     def save(self):
-        if not CHECKPOINTS_DIR.exists():
-            CHECKPOINTS_DIR.mkdir()
+        checkpoints_dir = CHECKPOINTS_DIR
+        if self.options.checkpoints_dirname is not None:
+            checkpoints_dir = checkpoints_dir.joinpath(self.options.checkpoints_dirname)
 
-        actor_save_path = CHECKPOINTS_DIR.joinpath("actor.pth")
-        critic_save_path = CHECKPOINTS_DIR.joinpath("critic.pth")
+        if not checkpoints_dir.exists():
+            checkpoints_dir.mkdir(parents=True)
+
+        actor_save_path = checkpoints_dir.joinpath("actor.pth")
+        critic_save_path = checkpoints_dir.joinpath("critic.pth")
         torch.save(self.actor.state_dict(), actor_save_path)
         torch.save(self.critic.state_dict(), critic_save_path)
 
     def load(self):
-        actor_save_path = CHECKPOINTS_DIR.joinpath("actor.pth")
-        critic_save_path = CHECKPOINTS_DIR.joinpath("critic.pth")
+        checkpoints_dir = CHECKPOINTS_DIR
+        if self.options.checkpoints_dirname is not None:
+            checkpoints_dir = checkpoints_dir.joinpath(self.options.checkpoints_dirname)
+
+        actor_save_path = checkpoints_dir.joinpath("actor.pth")
+        critic_save_path = checkpoints_dir.joinpath("critic.pth")
         if not actor_save_path.exists() or not critic_save_path.exists():
-            raise FileNotFoundError(f"One or both of {actor_save_path} and {critic_save_path} was/were not found")
+            raise FileNotFoundError(
+                f"One or both of {actor_save_path} and {critic_save_path} was/were not found"
+            )
 
         self.actor.load_state_dict(torch.load(actor_save_path))
         self.critic.load_state_dict(torch.load(critic_save_path))
