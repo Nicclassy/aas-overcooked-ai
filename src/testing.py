@@ -8,10 +8,16 @@ from src.training import OvercookedGame
 
 
 class AgentTester:
-    def __init__(self, env: Overcookable, agent: Agent):
+    def __init__(
+        self,
+        env: Overcookable,
+        agent: Agent,
+        always_choose_best_actions: bool = False
+    ):
         self.env = env
         self.agent = agent
         self.options = agent.options
+        self.always_choose_best_actions = always_choose_best_actions
 
     def play_game(self) -> OvercookedGame:
         info = self.env.reset()
@@ -31,7 +37,10 @@ class AgentTester:
             )
 
             with torch.no_grad():
-                actions, *_ = self.agent.choose_actions(observations)
+                if self.always_choose_best_actions:
+                    actions = self.agent.choose_best_actions(observations)
+                else:
+                    actions, *_ = self.agent.choose_actions(observations)
             next_info, reward, done, _ = self.env.step(actions)
 
             overcooked_states.append(overcooked_state)

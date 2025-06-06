@@ -13,6 +13,13 @@ from src.dtypes import Action, Done, LayoutName, Observation, Reward
 
 
 @runtime_checkable
+class HasLayoutName(Protocol):
+    @property
+    def layout_name(self) -> str:
+        ...
+
+
+@runtime_checkable
 class Overcookable(Protocol):
     """
     Instead of using `gym.Env` or `gymnasium.Env`,
@@ -40,7 +47,7 @@ class Overcookable(Protocol):
 
 
 @dataclass(frozen=True)
-class WrappedOvercookedEnv(Overcookable):
+class WrappedOvercookedEnv(Overcookable, HasLayoutName):
     """
     Simplify access of attributes greatly, keeping them
     together while still providing more or less the same
@@ -50,6 +57,10 @@ class WrappedOvercookedEnv(Overcookable):
     base_mdp: OvercookedGridworld
     base_env: OvercookedEnv
     env: Overcooked
+
+    @property
+    def layout_name(self) -> str:
+        return self.base_mdp.layout_name
 
     @property
     def action_space(self) -> gym.spaces.Space[Action]:
@@ -92,12 +103,14 @@ class OvercookedEnvFactory:
 
 
 @final
-class MultipleOvercookedEnv(Overcookable):
+class MultipleOvercookedEnv(Overcookable, HasLayoutName):
     @overload
     def __init__(
         self,
         *layout_names: LayoutName,
-        **kwargs: Any
+        factory: Optional[OvercookedEnvFactory] = None,
+        reset_env_interval: int = 1,
+        allow_same_env_twice: bool = False
     ):
         ...
 
@@ -105,7 +118,9 @@ class MultipleOvercookedEnv(Overcookable):
     def __init__(
         self,
         *envs: Overcookable,
-        **kwargs: Any
+        factory: Optional[OvercookedEnvFactory] = None,
+        reset_env_interval: int = 1,
+        allow_same_env_twice: bool = False
     ):
         ...
 
@@ -113,7 +128,7 @@ class MultipleOvercookedEnv(Overcookable):
         self,
         *args: LayoutName | Overcookable,
         factory: Optional[OvercookedEnvFactory] = None,
-        switch_env_interval: int = 1,
+        reset_env_interval: int = 1,
         allow_same_env_twice: bool = False
     ):
         args_it = iter(args)
@@ -134,8 +149,23 @@ class MultipleOvercookedEnv(Overcookable):
         self.n_envs = len(self.envs)
         self.previous_index = len(self.envs)
         self.n_resets = 0
-        self.reset_env_interval = switch_env_interval
+        self.reset_env_interval = reset_env_interval
         self.allow_same_env_twice = allow_same_env_twice
+
+    def __getitem__(self, index: int) -> Overcookable:
+        return self.envs[index]
+
+    def __len__(self) -> int:
+        # This isn't reliable, but we are nonetheless assuming
+        # that the caller does not modify the environments
+        # prior to using this method
+        return self.n_envs
+
+    @property
+    def layout_name(self) -> str:
+        if isinstance(self.env, HasLayoutName):
+            return self.env.layout_name
+        raise ValueError(f"Unknown layout name for {self.env!r}")
 
     @property
     def action_space(self) -> gym.spaces.Space[Action]:
@@ -151,6 +181,10 @@ class MultipleOvercookedEnv(Overcookable):
         return self.env.step(actions)
 
     def reset(self) -> dict[str, Any]:
+        if self.n_resets == 0 or self.n_resets % self.reset_env_interval != 0:
+            self.n_resets += 1
+            return self.env.reset()
+
         randomise_env_index = partial(random.randint, 0, self.n_envs - 1)
         if self.n_envs > 2:
             index = randomise_env_index()

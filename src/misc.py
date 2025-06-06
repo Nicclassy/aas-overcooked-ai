@@ -1,11 +1,15 @@
 import functools
+import os
+import subprocess
+import sys
+import threading
 import time
 import types
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, fields, is_dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Generic, Optional, TypeAlias, TypeVar, overload
+from typing import IO, Any, Generic, Optional, TextIO, TypeAlias, TypeVar, overload
 
 import log
 import numpy as np
@@ -131,14 +135,14 @@ def timed(obj: _ParamSpecCallable | object = _NO_ARG_PROVIDED, /, *, include_mil
     return decorator(obj)
 
 
-def dataclass_fieldnames(cls: type) -> list[str]:
+def dataclass_fieldnames(cls: type) -> set[str]:
     assert is_dataclass(cls), "This decorator only supports dataclasses"
-    return [field.name for field in fields(cls)]
+    return set(field.name for field in fields(cls))
 
 
 def filter_attributes_only(values: dict[str, Any], cls: type):
     assert is_dataclass(cls), "This decorator only supports dataclasses"
-    fieldnames = set(dataclass_fieldnames(cls))
+    fieldnames = dataclass_fieldnames(cls)
     return {
         key: value
         for key, value in values.items()
@@ -225,3 +229,70 @@ class AttributeUnpackable:
             yield from map(partial(getattr, self), self.__slots__)
         else:
             yield from self.__dict__.values()
+
+
+class TerminalLineClear:
+    def __init__(
+        self,
+        *,
+        reset_after_lines: int,
+        jupyter_notebook: bool = True,
+        start_after_seconds: int = 0
+    ):
+        self.reset_after_lines = reset_after_lines
+        self.line_count = 0
+        self.start_after_seconds = start_after_seconds
+        self.original_stdout: Optional[TextIO] = None
+        self.jupyter_notebook = jupyter_notebook
+        self.threads: list[threading.Thread] = []
+        self.start_thread: Optional[threading.Thread] = None
+        self.start_event = threading.Event()
+        self.lock = threading.Lock()
+
+    def __enter__(self) -> Self:
+        def start_thread():
+            time.sleep(self.start_after_seconds)
+            self.start_event.set()
+
+        self.start_thread = threading.Thread(target=start_thread)
+        self.start_thread.start()
+        self.original_stdout = sys.stdout
+        sys.stdout = self
+        return self
+
+    def __exit__(self, *_: Any):
+        sys.stdout = self.original_stdout
+        for thread in self.threads:
+            thread.join()
+
+    def add_process(self, process: subprocess.Popen):
+        def process_stream(stream: IO):
+            for line in stream:
+                if self.start_event.is_set():
+                    with self.lock:
+                        self.write(line)
+
+        thread = threading.Thread(
+            target=process_stream,
+            args=(process.stdout,)
+        )
+        thread.start()
+        self.threads.append(thread)
+
+    def write(self, text: str):
+        assert self.original_stdout is not None
+        if self.line_count >= self.reset_after_lines:
+            if self.jupyter_notebook:
+                from IPython.display import clear_output
+                clear_output(wait=True)
+            else:
+                os.system("cls" if os.name == "nt" else "clear")
+            self.line_count = 0
+
+        newlines = text.count('\n')
+        self.line_count += newlines
+        self.original_stdout.write(text)
+
+    def flush(self):
+        assert self.original_stdout is not None
+        self.original_stdout.flush()

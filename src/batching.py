@@ -28,8 +28,8 @@ class RolloutExperience(AttributeUnpackable):
 
 @final
 class RolloutExperiences(AttributeIterable[list]):
-    def __init__(self, minibatch_size: int, capacity: int):
-        self.minibatch_size = minibatch_size
+    def __init__(self, batch_size: int, capacity: int):
+        self.batch_size = batch_size
         self.states: list[StoredState] = [0] * capacity
         self.actions: list[StoredAction] = [0] * capacity
         self.values: list[StoredValue] = [0] * capacity
@@ -41,13 +41,13 @@ class RolloutExperiences(AttributeIterable[list]):
     def __len__(self) -> int:
         return self.index
 
-    def minibatch_indicies(self) -> Iterator[NDArray[np.int32]]:
+    def batch_indicies(self) -> Iterator[NDArray[np.int32]]:
         n_experiences = len(self)
-        batch_start = np.arange(0, n_experiences, self.minibatch_size)
+        batch_start = np.arange(0, n_experiences, self.batch_size)
         indices = np.arange(n_experiences, dtype=np.int32)
         np.random.shuffle(indices)
         yield from (
-            indices[i:i + self.minibatch_size]
+            indices[i:i + self.batch_size]
             for i in batch_start
         )
 
