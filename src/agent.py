@@ -1,4 +1,4 @@
-from functools import partial
+from functools import partial, partialmethod
 from typing import Optional, final, overload
 
 import numpy as np
@@ -21,6 +21,8 @@ from src.misc import CHECKPOINTS_DIR, flatten_dim, numpy_getitem
 from src.networks import ActorNetwork, CriticNetwork
 from src.parameters import Hyperparameters, Options
 from src.utils import WriterFactory, create_writer, tensor_mean
+
+_VERBOSE = True
 
 
 @final
@@ -59,26 +61,30 @@ class Agent:
         assert env or (n_actions is not None and input_dim is not None), \
             "An environmnent or dimensions must be provided"
         self.experiences = RolloutExperiences(
-            parameters.minibatch_size,
+            parameters.batch_size,
             capacity=options.horizon * options.rollout_episodes,
         )
         self.options = options
         self.gamma = parameters.gamma
         self.epsilon = parameters.epsilon
-        self.n_epochs = parameters.n_epochs
+        self.update_epochs = parameters.update_epochs
         self.gae_lambda = parameters.gae_lambda
         self.c1 = parameters.critic_coefficient
         self.c2 = parameters.entropy_coefficient
         self.total_epochs = 0
         self.writer_factory = writer_factory or partial(create_writer, write=False)
+        self.loaded_from_save = False
+        self.trained = False
 
         input_dim = flatten_dim(input_dim or env.observation_space.shape)
         n_actions = n_actions or env.action_space.n
         assert input_dim >= parameters.actor_fc1_dim, (
-            f"Input dim {input_dim} should be larger than layer 1 dim {parameters.actor_fc1_dim}"
+            f"Input dim {input_dim} should be larger than "
+            f"(or the same as) layer 1 dim {parameters.actor_fc1_dim}"
         )
-        assert input_dim >= parameters.critic_fc1_dim, (
-            f"Input dim {input_dim} should be larger than layer 1 dim {parameters.critic_fc1_dim}"
+        assert input_dim * 2 >= parameters.critic_fc1_dim, (
+            f"Input dim {input_dim} should be larger than "
+            f"(or the same as) layer 1 dim {parameters.critic_fc1_dim}"
         )
         self.actor = ActorNetwork(n_actions, input_dim, parameters)
         self.critic = CriticNetwork(input_dim * 2, parameters)
@@ -115,26 +121,26 @@ class Agent:
         critic_losses = []
         total_losses = []
 
-        for _ in range(self.n_epochs):
+        for _ in range(self.update_epochs):
             states = torch.from_numpy(np.array(self.experiences.states)).float()
             actions = torch.from_numpy(np.array(self.experiences.actions)).float()
             probs = torch.from_numpy(np.array(self.experiences.probs)).float()
 
-            for b_indicies in self.experiences.minibatch_indicies():
+            for b_indicies in self.experiences.batch_indicies():
                 b_states = numpy_getitem(
-                    states, b_indicies, index=self.options.use_minibatches
+                    states, b_indicies, index=self.options.use_batches
                 )
                 b_actions = numpy_getitem(
-                    actions, b_indicies, index=self.options.use_minibatches
+                    actions, b_indicies, index=self.options.use_batches
                 )
                 b_advantages = numpy_getitem(
-                    advantages, b_indicies, index=self.options.use_minibatches
+                    advantages, b_indicies, index=self.options.use_batches
                 )
                 b_returns = numpy_getitem(
-                    returns, b_indicies, index=self.options.use_minibatches
+                    returns, b_indicies, index=self.options.use_batches
                 )
                 old_probs = numpy_getitem(
-                    probs, b_indicies, index=self.options.use_minibatches
+                    probs, b_indicies, index=self.options.use_batches
                 )
 
                 combined_action = b_states.view(b_states.shape[0], -1)
@@ -149,7 +155,7 @@ class Agent:
                 unclipped_ratio = probs_ratio * b_advantages
                 clipped_ratio = (
                     torch.clamp(probs_ratio, 1 - self.epsilon, 1 + self.epsilon)
-                    * advantages
+                    * b_advantages
                 )
 
                 entropy = dist.entropy().mean()
@@ -236,6 +242,12 @@ class Agent:
         if self.options.reset_epochs_after_game:
             self.total_epochs = 0
 
+    def finish_training(self):
+        if self.trained:
+            return
+        if self.options.save_agent_after_training:
+            self.save()
+
     def save(self):
         checkpoints_dir = CHECKPOINTS_DIR
         if self.options.checkpoints_dirname is not None:
@@ -248,18 +260,29 @@ class Agent:
         critic_save_path = checkpoints_dir.joinpath("critic.pth")
         torch.save(self.actor.state_dict(), actor_save_path)
         torch.save(self.critic.state_dict(), critic_save_path)
+        if _VERBOSE:
+            print("Saved actor and critic to", checkpoints_dir)
 
-    def load(self):
+    def load(self, *, checkpoints_must_exist: bool = True):
         checkpoints_dir = CHECKPOINTS_DIR
         if self.options.checkpoints_dirname is not None:
             checkpoints_dir = checkpoints_dir.joinpath(self.options.checkpoints_dirname)
 
         actor_save_path = checkpoints_dir.joinpath("actor.pth")
         critic_save_path = checkpoints_dir.joinpath("critic.pth")
-        if not actor_save_path.exists() or not critic_save_path.exists():
+        checkpoints_exist = actor_save_path.exists() and critic_save_path.exists()
+        if not checkpoints_exist and not checkpoints_must_exist:
+            return
+
+        if not checkpoints_exist:
             raise FileNotFoundError(
                 f"One or both of {actor_save_path} and {critic_save_path} was/were not found"
             )
 
         self.actor.load_state_dict(torch.load(actor_save_path))
         self.critic.load_state_dict(torch.load(critic_save_path))
+        self.loaded_from_save = True
+        if _VERBOSE:
+            print("Loaded agent files from", checkpoints_dir)
+
+    load_if_save_exists = partialmethod(load, checkpoints_must_exist=False)

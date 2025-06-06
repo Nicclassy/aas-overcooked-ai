@@ -1,8 +1,11 @@
 import asyncio
 import atexit
+import colorsys
+import operator
 import os
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional, TypeAlias
 
@@ -11,13 +14,15 @@ import torch
 from colorama import Fore
 from getkey import getkey
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 from typing_extensions import Never
 
-from src.dtypes import LayoutName
+from src.dtypes import LayoutName, Reward
 from src.misc import FOLDER_DIR
 
 RUNS_DIR = FOLDER_DIR / "runs"
 DELETE_PREVIOUS_TENSORBOARD_RUNS = True
+RESET = "\033[0m"
 
 _DEFAULT_TENSORBOARD_PORT = 6006
 
@@ -63,9 +68,36 @@ def tensor_mean(values: list[Any] | torch.Tensor) -> torch.Tensor:
         return torch.tensor(values).mean()
 
 
-def random_tqdm_colour() -> str:
+def _rgb(r: int, g: int, b: int) -> str:
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def _random_rgb() -> str:
+    rand = random.Random()
+    h = rand.random()
+    s = rand.uniform(0.4, 1.0)
+    l = rand.uniform(0.4, 0.8) # noqa
+    return _rgb(
+        *map(int, map(partial(operator.mul, 255), colorsys.hls_to_rgb(h, l, s)))
+    )
+
+
+
+def terminal_supports_truecolor() -> bool:
+    return os.getenv("COLORTERM") in ("truecolor", "24bit")
+
+
+def random_tqdm_colour(chosen_only: bool = True) -> str:
+    if terminal_supports_truecolor():
+        return _random_rgb()
+
     rand = random.Random()
     colour = rand.choice(_TQDM_COLOURS)
+    if not chosen_only:
+        return colour
+
+    if len(_chosen_colours) == len(_TQDM_COLOURS):
+        _chosen_colours.clear()
     while colour in _chosen_colours:
         colour = rand.choice(_TQDM_COLOURS)
     _chosen_colours.add(colour)
@@ -75,6 +107,49 @@ def random_tqdm_colour() -> str:
 def get_proper_layout_name(layout_name: str | LayoutName) -> str:
     return ' '.join(layout_name.split('_')).title()
 
+
+def jupyter_notebook_is_running() -> bool:
+    # Source: https://stackoverflow.com/questions/15411967/how-can-i-check-if-code-is-executed-in-the-ipython-notebook
+    try:
+        shell = get_ipython().__class__.__name__ # type: ignore
+        if shell == "ZMQInteractiveShell":
+            return True
+        elif shell == "TerminalInteractiveShell":
+            return False
+        else:
+            return False
+    except (ImportError, NameError):
+        return False
+
+
+def tqdm_type_factory(*, force_jupyter: bool = False) -> tqdm:
+    """Simple helper enable Jupyter Notebook compatibility."""
+    if force_jupyter or jupyter_notebook_is_running():
+        from tqdm.notebook import tqdm as _tqdm
+    else:
+        from tqdm import tqdm as _tqdm
+    return _tqdm
+
+
+def plot_rewards(values: Iterable[tuple[LayoutName, list[Reward]]]):
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 5))
+
+    n_episodes = len(values[0][1])
+    for layout_name, rewards in values:
+        plt.plot(range(n_episodes), rewards, label=get_proper_layout_name(layout_name))
+
+    plt.xlabel("Episode")
+    plt.ylabel("Reward")
+    plt.xticks(range(0, n_episodes + 1, n_episodes // 10))
+    plt.title("PPO rewards by layout")
+    plt.xlim(left=1, right=n_episodes)
+    plt.ylim(bottom=0)
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.show()
 
 class NullWriter:
     def __getattr__(self, _: Any):
@@ -160,8 +235,14 @@ async def _create_tensorboard_process(
 
 start_event = asyncio.Event()
 
-def _stop_tensorboard_on_keypress(process: asyncio.subprocess.Process):
-    print(Fore.MAGENTA + "Press any key to stop TensorBoard..." + Fore.RESET)
+def _stop_tensorboard_on_keypress(
+    process: asyncio.subprocess.Process,
+    running_message: bool = True
+):
+    if running_message:
+        print(Fore.MAGENTA + "Running TensorBoard..." + Fore.RESET)
+    else:
+        print(Fore.MAGENTA + "Press any key to stop TensorBoard..." + Fore.RESET)
     start_event.set()
     _ = getkey()
     process.kill()
@@ -203,7 +284,13 @@ async def _run_tensorboard(log_dir: os.PathLike, port: int):
 
 def run_tensorboard(log_dir: os.PathLike = RUNS_DIR, port: Optional[int] = None):
     try:
-        asyncio.run(_run_tensorboard(log_dir, port or _DEFAULT_TENSORBOARD_PORT))
+        loop = asyncio.get_running_loop()
+        runner = loop.create_task
+    except RuntimeError:
+        runner = asyncio.run
+
+    try:
+         runner(_run_tensorboard(log_dir, port or _DEFAULT_TENSORBOARD_PORT))
     except KeyboardInterrupt:
         pass
 
