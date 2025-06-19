@@ -11,8 +11,8 @@ from functools import partial
 from pathlib import Path
 from typing import IO, Any, Generic, Optional, TextIO, TypeAlias, TypeVar, overload
 
-import log
 import numpy as np
+from colorama import Fore
 from numpy.typing import NDArray
 from typing_extensions import ParamSpec, Self, TypeAliasType
 
@@ -41,9 +41,8 @@ def numpy_getitem(collection: T, indicies: NDArray[np.int32], *, index: bool) ->
 
 def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
     def assertion(value: bool, expected: _TypeOrAlias, actual: _TypeOrAlias):
-        assert value, log.colours.RED(
-            f"Expected {expected.__name__!r}, got {actual.__name__!r}"
-        )
+        assert value, \
+            f"{Fore.RED}Expected {expected.__name__!r}, got {actual.__name__!r}{Fore.RESET}"
 
     if isinstance(obj, np.ndarray):
         assertion(obj.dtype.type is type_or_alias, type_or_alias, obj.dtype.type)
@@ -67,7 +66,7 @@ def assert_instance(obj: object, type_or_alias: _TypeOrAlias):
             reason = err
 
     if cannot_check:
-        log.warn("Cannot check if object is", unaliased, "because", reason)
+        print("Cannot check if object is", unaliased, "because", reason)
     else:
         assertion(result, unaliased, type(obj))
 
@@ -125,7 +124,7 @@ def timed(obj: _ParamSpecCallable | object = _NO_ARG_PROVIDED, /, *, include_mil
             result = func(*args, **kwargs)
             end_time = time.perf_counter()
             elapsed_time = format_time(end_time - start_time, include_milliseconds)
-            log(f"{func.__name__!r} took", elapsed_time, "to execute")
+            print(f"{func.__name__!r} took", elapsed_time, "to execute")
             return result
         return wrapper
 

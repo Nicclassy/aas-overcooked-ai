@@ -1,6 +1,6 @@
 # AAS Overcooked-AI
 This project contains my finished submission for final project of Autonomous and Adaptive Systems (92858), a second-cycle (masters) course in Artifical Intelligence at the University of Bologna that explores RL.
-The objective is to implement an RL algorithm on multi-agent environment [Overcooked-AI](https://github.com/HumanCompatibleAI/overcooked_ai) inspired by the video game of the same name [Overcooked](http://www.ghosttowngames.com/overcooked/).
+The objective is to implement an RL algorithm on the multi-agent environment [Overcooked-AI](https://github.com/HumanCompatibleAI/overcooked_ai) inspired by the video game of the same name [Overcooked](http://www.ghosttowngames.com/overcooked/).
 I have chosen to use PPO for this project.
 
 ## Setup
